@@ -18,7 +18,7 @@ from pathlib import Path
 
 
 def _get_api_key() -> str:
-    env_path = Path.home() / ".hermes" / ".env"
+    env_path = Path("/home/xephyr/.hermes/.env")
     if not env_path.exists():
         raise FileNotFoundError(f"{env_path} not found")
     with open(env_path, "r", encoding="utf-8") as f:
@@ -37,7 +37,7 @@ def main():
     env["OLLAMA_API_KEY"] = api_key
     env["PYTHONUNBUFFERED"] = "1"
 
-    db_path = Path(__file__).resolve().parent.parent / "src" / "astro_api" / "astro.db"
+    db_path = Path(os.environ.get("ASTRO_DB_PATH", os.path.expanduser("~/second-brain/data/astro.db")))
 
     cmd = [
         sys.executable,

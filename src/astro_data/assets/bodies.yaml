@@ -1,0 +1,157 @@
+# Central body metadata corpus for astrology-tool
+# Keys are canonical English names; values contain glyph, calc_id, and default_include flag
+
+Sun:
+  id: 0
+  glyph: ☉
+  name: Sun
+  calc_id: 0
+  default_include: true
+  category: luminary
+
+Moon:
+  id: 1
+  glyph: ☽
+  name: Moon
+  calc_id: 1
+  default_include: true
+  category: luminary
+
+Mercury:
+  id: 2
+  glyph: ☿
+  name: Mercury
+  calc_id: 2
+  default_include: true
+  category: personal_planet
+
+Venus:
+  id: 3
+  glyph: ♀
+  name: Venus
+  calc_id: 3
+  default_include: true
+  category: personal_planet
+
+Mars:
+  id: 4
+  glyph: ♂
+  name: Mars
+  calc_id: 4
+  default_include: true
+  category: personal_planet
+
+Jupiter:
+  id: 5
+  glyph: ♃
+  name: Jupiter
+  calc_id: 5
+  default_include: true
+  category: social_planet
+
+Saturn:
+  id: 6
+  glyph: ♄
+  name: Saturn
+  calc_id: 6
+  default_include: true
+  category: social_planet
+
+Uranus:
+  id: 7
+  glyph: ♅
+  name: Uranus
+  calc_id: 7
+  default_include: true
+  category: outer_planet
+
+Neptune:
+  id: 8
+  glyph: ♆
+  name: Neptune
+  calc_id: 8
+  default_include: true
+  category: outer_planet
+
+Pluto:
+  id: 9
+  glyph: ♇
+  name: Pluto
+  calc_id: 9
+  default_include: true
+  category: outer_planet
+
+Lilith:
+  id: 10
+  glyph: ⚸
+  name: Lilith
+  calc_id: 12
+  default_include: false
+  category: asteroid
+
+Mean Node:
+  id: 11
+  glyph: ☊
+  name: Mean Node
+  calc_id: 10
+  default_include: true
+  category: lunar_node
+  aliases:
+    - North Node
+
+True Node:
+  id: 12
+  glyph: ☊
+  name: True Node
+  calc_id: 11
+  default_include: false
+  category: lunar_node
+
+South Node:
+  id: 13
+  glyph: ☋
+  name: South Node
+  derived: true
+  default_include: false
+  category: lunar_node
+  opposite_of: Mean Node
+
+Chiron:
+  id: 14
+  glyph: ⚷
+  name: Chiron
+  calc_id: 15
+  default_include: false
+  category: centaur
+
+Ceres:
+  id: 15
+  glyph: ⚳
+  name: Ceres
+  calc_id: 17
+  default_include: false
+  category: asteroid
+
+Pallas:
+  id: 16
+  glyph: ⚴
+  name: Pallas
+  calc_id: 18
+  default_include: false
+  category: asteroid
+
+Juno:
+  id: 17
+  glyph: ⚵
+  name: Juno
+  calc_id: 19
+  default_include: false
+  category: asteroid
+
+Vesta:
+  id: 18
+  glyph: ⚶
+  name: Vesta
+  calc_id: 20
+  default_include: false
+  category: asteroid

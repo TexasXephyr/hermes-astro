@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astro"
+version = "0.5.0"
+description = "Centralized astrology calculation, text, display, and hours library"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Xephyr"}]
+dependencies = [
+    "PyYAML",
+    "tzdata; platform_system != 'Linux'",
+]
+
+[project.optional-dependencies]
+display = ["Pillow"]
+hours = ["ephem"]
+test = ["pytest"]
+all = ["Pillow", "ephem", "pytest"]
+
+[project.scripts]
+astro = "astro.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/xephyr/astrology-tool"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+astro_calc = ["*.so"]
+astro_data = ["assets/*.yaml"]
+astro_hours = ["*.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-q --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

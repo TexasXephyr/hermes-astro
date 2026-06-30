@@ -1,0 +1,19 @@
+# Central scoring weights corpus for astrology-tool
+# Numeric weights for dignity calculations
+
+domicile: 5
+exaltation: 4
+detriment: -5
+fall: -4
+
+angular: 3
+succedent: 2
+cadent: 1
+
+direct: 1
+retrograde: -1
+
+in_own_sign: 2
+in_mutual_reception: 3
+
+peregrine: 0

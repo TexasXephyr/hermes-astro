@@ -1,0 +1,122 @@
+# Central sign metadata corpus for astrology-tool
+# Keys are canonical English names
+
+Aries:
+  id: 0
+  glyph: ♈
+  name: Aries
+  element: fire
+  modality: cardinal
+  polarity: yang
+  ruler: Mars
+  degree_range: [0, 30]
+
+Taurus:
+  id: 1
+  glyph: ♉
+  name: Taurus
+  element: earth
+  modality: fixed
+  polarity: yin
+  ruler: Venus
+  degree_range: [30, 60]
+
+Gemini:
+  id: 2
+  glyph: ♊
+  name: Gemini
+  element: air
+  modality: mutable
+  polarity: yang
+  ruler: Mercury
+  degree_range: [60, 90]
+
+Cancer:
+  id: 3
+  glyph: ♋
+  name: Cancer
+  element: water
+  modality: cardinal
+  polarity: yin
+  ruler: Moon
+  degree_range: [90, 120]
+
+Leo:
+  id: 4
+  glyph: ♌
+  name: Leo
+  element: fire
+  modality: fixed
+  polarity: yang
+  ruler: Sun
+  degree_range: [120, 150]
+
+Virgo:
+  id: 5
+  glyph: ♍
+  name: Virgo
+  element: earth
+  modality: mutable
+  polarity: yin
+  ruler: Mercury
+  degree_range: [150, 180]
+
+Libra:
+  id: 6
+  glyph: ♎
+  name: Libra
+  element: air
+  modality: cardinal
+  polarity: yang
+  ruler: Venus
+  degree_range: [180, 210]
+
+Scorpio:
+  id: 7
+  glyph: ♏
+  name: Scorpio
+  element: water
+  modality: fixed
+  polarity: yin
+  ruler: Mars
+  degree_range: [210, 240]
+
+Sagittarius:
+  id: 8
+  glyph: ♐
+  name: Sagittarius
+  element: fire
+  modality: mutable
+  polarity: yang
+  ruler: Jupiter
+  degree_range: [240, 270]
+
+Capricorn:
+  id: 9
+  glyph: ♑
+  name: Capricorn
+  element: earth
+  modality: cardinal
+  polarity: yin
+  ruler: Saturn
+  degree_range: [270, 300]
+
+Aquarius:
+  id: 10
+  glyph: ♒
+  name: Aquarius
+  element: air
+  modality: fixed
+  polarity: yang
+  ruler: Saturn
+  degree_range: [300, 330]
+
+Pisces:
+  id: 11
+  glyph: ♓
+  name: Pisces
+  element: water
+  modality: mutable
+  polarity: yin
+  ruler: Jupiter
+  degree_range: [330, 360]

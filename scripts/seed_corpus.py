@@ -28,7 +28,7 @@ sys.path.insert(0, str(_ASTRO_SRC))
 
 from astro_data import db
 
-DB_PATH = _ASTRO_SRC / "astro_api" / "astro.db"
+DB_PATH = Path(os.environ.get("ASTRO_DB_PATH", os.path.expanduser("~/second-brain/data/astro.db")))
 
 # ------------------------------------------------------------------
 # Constants
@@ -241,7 +241,11 @@ def main():
     parser.add_argument("--domain", choices=list(DOMAINS_CONFIG.keys()), help="Process only one domain")
     parser.add_argument("--body", help="Process only one body (requires --domain)")
     parser.add_argument("--dry-run", action="store_true", help="Print prompts without calling LLM")
-    parser.add_argument("--db", default=str(DB_PATH), help="Path to astro.db")
+    parser.add_argument(
+        "--db",
+        default=os.environ.get("ASTRO_DB_PATH", str(DB_PATH)),
+        help="Path to astro.db (default: env ASTRO_DB_PATH or ~/second-brain/data/astro.db)",
+    )
     args = parser.parse_args()
 
     conn = db.init_db(args.db)

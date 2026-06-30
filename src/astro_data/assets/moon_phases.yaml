@@ -1,0 +1,74 @@
+# Central moon phase metadata corpus for astrology-tool
+# Phases defined by Sun-Moon angular separation
+
+New_Moon:
+  id: new
+  glyph: 🌑
+  name: New Moon
+  min_angle: 0
+  max_angle: 15
+  keywords: [beginnings, potential, seeding]
+
+Waxing_Crescent:
+  id: waxing_crescent
+  glyph: 🌒
+  name: Waxing Crescent
+  min_angle: 15
+  max_angle: 75
+  keywords: [growth, intention, building]
+
+First_Quarter:
+  id: first_quarter
+  glyph: 🌓
+  name: First Quarter
+  min_angle: 75
+  max_angle: 105
+  keywords: [action, challenge, decision]
+
+Waxing_Gibbous:
+  id: waxing_gibbous
+  glyph: 🌔
+  name: Waxing Gibbous
+  min_angle: 105
+  max_angle: 165
+  keywords: [refinement, adjustment, preparation]
+
+Full_Moon:
+  id: full
+  glyph: 🌕
+  name: Full Moon
+  min_angle: 165
+  max_angle: 195
+  keywords: [culmination, illumination, harvest]
+
+Waning_Gibbous:
+  id: waning_gibbous
+  glyph: 🌖
+  name: Waning Gibbous
+  min_angle: 195
+  max_angle: 255
+  keywords: [sharing, gratitude, teaching]
+
+Last_Quarter:
+  id: last_quarter
+  glyph: 🌗
+  name: Last Quarter
+  min_angle: 255
+  max_angle: 285
+  keywords: [release, letting go, surrender]
+
+Waning_Crescent:
+  id: waning_crescent
+  glyph: 🌘
+  name: Waning Crescent
+  min_angle: 285
+  max_angle: 345
+  keywords: [rest, reflection, clearing]
+
+Balsamic:
+  id: balsamic
+  glyph: 🌘
+  name: Balsamic
+  min_angle: 345
+  max_angle: 360
+  keywords: [completion, surrender, release]

@@ -1,0 +1,62 @@
+# Central house system metadata corpus for astrology-tool
+# Keys are system identifiers
+
+Placidus:
+  id: placidus
+  name: Placidus
+  code: P
+  description: Time-based quadrant system; most common in Western astrology
+
+Koch:
+  id: koch
+  name: Koch
+  code: K
+  description: Birth place based; similar to Placidus but with different intermediate cusps
+
+Regiomontanus:
+  id: regiomontanus
+  name: Regiomontanus
+  code: R
+  description: Space-based quadrant system; equal divisions of equator
+
+Campanus:
+  id: campanus
+  name: Campanus
+  code: C
+  description: Space-based; equal divisions of prime vertical
+
+Equal:
+  id: equal
+  name: Equal (Ascendant)
+  code: E
+  description: 30° houses starting from Ascendant
+
+Equal_Midheaven:
+  id: equal_midheaven
+  name: Equal (Midheaven)
+  code: M
+  description: 30° houses starting from Midheaven
+
+Whole_Sign:
+  id: whole_sign
+  name: Whole Sign
+  code: W
+  description: Each sign is one house; Ascendant sign is 1st house
+
+Porphyry:
+  id: porphyry
+  name: Porphyry
+  code: Q
+  description: Quadrant system with equal intermediate houses
+
+Alcabitius:
+  id: alcabitius
+  name: Alcabitius
+  code: A
+  description: Time-based; similar to Placidus with different calculation
+
+Morinus:
+  id: morinus
+  name: Morinus
+  code: O
+  description: Space-based; equal divisions of equator in mundane positions

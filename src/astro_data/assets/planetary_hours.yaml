@@ -1,0 +1,65 @@
+# Central planetary hour metadata corpus for astrology-tool
+
+chaldean_order:
+  - Saturn
+  - Jupiter
+  - Mars
+  - Sun
+  - Venus
+  - Mercury
+  - Moon
+
+day_ruler:
+  Sunday: Sun
+  Monday: Moon
+  Tuesday: Mars
+  Wednesday: Mercury
+  Thursday: Jupiter
+  Friday: Venus
+  Saturday: Saturn
+
+qualities:
+  Sun:
+    element: fire
+    nature: hot and dry
+    benefits: [vitality, confidence, leadership, success]
+    cautions: [ego, arrogance, burnout]
+  Moon:
+    element: water
+    nature: cold and moist
+    benefits: [intuition, emotions, nurturing, receptivity]
+    cautions: [moodiness, over-sensitivity, passivity]
+  Mars:
+    element: fire
+    nature: hot and dry
+    benefits: [courage, action, drive, assertiveness]
+    cautions: [aggression, impulsiveness, conflict]
+  Mercury:
+    element: earth
+    nature: variable
+    benefits: [communication, learning, travel, commerce]
+    cautions: [scattered thinking, deception, nervousness]
+  Jupiter:
+    element: air
+    nature: hot and moist
+    benefits: [expansion, wisdom, luck, generosity]
+    cautions: [excess, over-indulgence, complacency]
+  Venus:
+    element: earth
+    nature: cold and moist
+    benefits: [love, beauty, harmony, pleasure]
+    cautions: [vanity, indulgence, dependency]
+  Saturn:
+    element: earth
+    nature: cold and dry
+    benefits: [discipline, structure, wisdom, endurance]
+    cautions: [restriction, fear, rigidity, delay]
+
+prompts:
+  Sun: "What brings you joy and vitality? Where can you shine?"
+  Moon: "What do you need to nurture? What emotions need attention?"
+  Mars: "What action needs to be taken? Where do you need courage?"
+  Mercury: "What needs to be communicated? What can you learn today?"
+  Jupiter: "Where can you expand? What brings growth and wisdom?"
+  Venus: "Where can you bring beauty? What relationships need care?"
+  Saturn: "What structure needs building? Where do you need discipline?"

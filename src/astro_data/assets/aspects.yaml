@@ -1,0 +1,90 @@
+# Central aspect metadata corpus for astrology-tool
+# IDs MUST match the C API AC_ASP_* constants in src/astro_calc/astro_calc.h:
+# 0 conjunction, 1 semisextile, 2 semisquare, 3 sextile, 4 square,
+# 5 trine, 6 sesquiquadrate, 7 quincunx, 8 opposition.
+
+conjunction:
+  id: 0
+  glyph: ☌
+  name: conjunction
+  angle: 0
+  major: true
+  default_orb: 8
+  quality: neutral
+  color: "#ffff00"
+
+semisextile:
+  id: 1
+  glyph: ⚺
+  name: semisextile
+  angle: 30
+  major: false
+  default_orb: 2
+  quality: neutral
+
+semisquare:
+  id: 2
+  glyph: ∠
+  name: semisquare
+  angle: 45
+  major: false
+  default_orb: 2
+  quality: mild
+
+sextile:
+  id: 3
+  glyph: ⚹
+  name: sextile
+  angle: 60
+  major: true
+  default_orb: 4
+  quality: soft
+  color: "#69db7c"
+
+square:
+  id: 4
+  glyph: □
+  name: square
+  angle: 90
+  major: true
+  default_orb: 7
+  quality: hard
+  color: "#ff8787"
+
+trine:
+  id: 5
+  glyph: △
+  name: trine
+  angle: 120
+  major: true
+  default_orb: 7
+  quality: soft
+  color: "#4dabf7"
+
+sesquiquadrate:
+  id: 6
+  glyph: ⚼
+  name: sesquiquadrate
+  angle: 135
+  major: false
+  default_orb: 2
+  quality: mild
+
+quincunx:
+  id: 7
+  glyph: ⚻
+  name: quincunx
+  angle: 150
+  major: false
+  default_orb: 3
+  quality: awkward
+
+opposition:
+  id: 8
+  glyph: ☍
+  name: opposition
+  angle: 180
+  major: true
+  default_orb: 8
+  quality: hard
+  color: "#ff6b6b"

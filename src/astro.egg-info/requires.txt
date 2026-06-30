@@ -1,0 +1,18 @@
+PyYAML
+
+[:platform_system != "Linux"]
+tzdata
+
+[all]
+Pillow
+ephem
+pytest
+
+[display]
+Pillow
+
+[hours]
+ephem
+
+[test]
+pytest

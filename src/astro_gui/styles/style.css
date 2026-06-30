@@ -1,0 +1,60 @@
+/* Dark theme base overrides for AstroGUI */
+window {
+    background-color: #1e1e1e;
+    color: #eeeeee;
+}
+
+box {
+    background-color: #1e1e1e;
+    color: #eeeeee;
+}
+
+scrolledwindow {
+    background-color: #1e1e1e;
+}
+
+picture {
+    background-color: #1e1e1e;
+}
+
+label {
+    color: #eeeeee;
+}
+
+button {
+    background-color: #2d2d2d;
+    color: #eeeeee;
+    border: 1px solid #444444;
+    padding: 4px 10px;
+}
+
+button:hover {
+    background-color: #3d3d3d;
+}
+
+entry {
+    background-color: #2d2d2d;
+    color: #eeeeee;
+    border: 1px solid #444444;
+    padding: 4px 8px;
+}
+
+notebook tab {
+    background-color: #2d2d2d;
+    color: #eeeeee;
+    padding: 6px 12px;
+}
+
+notebook tab:checked {
+    background-color: #3d3d3d;
+}
+
+paned > separator {
+    background-color: #333333;
+}
+
+dropdown button {
+    background-color: #2d2d2d;
+    color: #eeeeee;
+    border: 1px solid #444444;
+}

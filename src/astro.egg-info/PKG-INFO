@@ -1,0 +1,93 @@
+Metadata-Version: 2.4
+Name: astro
+Version: 0.5.0
+Summary: Centralized astrology calculation, text, display, and hours library
+Author: Xephyr
+License: MIT
+Project-URL: Homepage, https://github.com/xephyr/astrology-tool
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: PyYAML
+Requires-Dist: tzdata; platform_system != "Linux"
+Provides-Extra: display
+Requires-Dist: Pillow; extra == "display"
+Provides-Extra: hours
+Requires-Dist: ephem; extra == "hours"
+Provides-Extra: test
+Requires-Dist: pytest; extra == "test"
+Provides-Extra: all
+Requires-Dist: Pillow; extra == "all"
+Requires-Dist: ephem; extra == "all"
+Requires-Dist: pytest; extra == "all"
+
+# Astrology Tool (`astro`)
+
+A centralized, installable Python astrology library and CLI rooted in `~/astro`.
+
+## Packages
+
+| Package | Purpose |
+|---------|---------|
+| `astro_calc` | Swiss Ephemeris C extension wrapper (ctypes) |
+| `astro_analyze` | Transit events, dignity scoring, synthesis, cookbook |
+| `astro_data` | Central YAML-backed reference corpus + SQLite data layer |
+| `astro_text` | Symbols, house helpers, dignity rules, aspect formatting, reports |
+| `astro_display` | SVG/PNG wheels, tables, font discovery, report rendering |
+| `astro_hours` | Sunrise/sunset and Chaldean planetary-hour computation |
+| `astro_api` | Optional `localhost:8081` JSON REST API server |
+| `astro` | `python -m astro` CLI |
+
+## Quickstart
+
+Install in editable mode inside the Hermes venv:
+
+```bash
+pip install -e ~/astro
+```
+
+Import the library:
+
+```python
+from astro_data.loaders import yaml_loader
+from astro_data.bodies import BodySet, DEFAULT_POINTS
+
+bodies = yaml_loader("bodies")
+points = BodySet(DEFAULT_POINTS)
+print(list(points))
+```
+
+Run the CLI:
+
+```bash
+python -m astro --help
+python -m astro bodies
+```
+
+## Build prerequisites
+
+- Python 3.10+
+- Swiss Ephemeris headers/library installed (only needed to rebuild the C core; see `src/astro_calc/meson.build`)
+
+The compiled C extension `libastro-calc.so` is pre-built and bundled as package
+data via `setuptools`; `meson.build` remains for manual rebuilds of the C core and
+is not compiled during `pip install`.
+
+## Optional features
+
+```bash
+pip install -e ~/astro[all]   # Pillow, ephem, pytest
+pip install -e ~/astro[display]
+pip install -e ~/astro[hours]
+pip install -e ~/astro[test]
+```
+
+## Running tests
+
+```bash
+cd ~/astro
+python -m pytest tests/astro_data -v
+```
+
+## License
+
+MIT

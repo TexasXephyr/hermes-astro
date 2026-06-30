@@ -1,0 +1,105 @@
+# Central dignity metadata corpus for astrology-tool
+# Keys are body names; values contain domicile, exaltation, detriment, fall.
+# Exaltation is degree-sensitive; domicile/detriment/fall are sign-based.
+# Optional exaltation_degree / exaltation_orb default to 2.0 if omitted.
+
+Sun:
+  domicile: [Leo]
+  exaltation: [Aries]
+  exaltation_degree: 19
+  exaltation_orb: 2
+  detriment: [Aquarius]
+  fall: [Libra]
+
+Moon:
+  domicile: [Cancer]
+  exaltation: [Taurus]
+  exaltation_degree: 3
+  detriment: [Capricorn]
+  fall: [Scorpio]
+
+Mercury:
+  domicile: [Gemini, Virgo]
+  exaltation: [Aquarius]
+  exaltation_degree: 15
+  detriment: [Sagittarius, Pisces]
+  fall: [Pisces]
+
+Venus:
+  domicile: [Taurus, Libra]
+  exaltation: [Pisces]
+  exaltation_degree: 27
+  detriment: [Aries, Scorpio]
+  fall: [Virgo]
+
+Mars:
+  domicile: [Aries, Scorpio]
+  exaltation: [Capricorn]
+  exaltation_degree: 28
+  detriment: [Libra, Taurus]
+  fall: [Cancer]
+
+Jupiter:
+  domicile: [Sagittarius, Pisces]
+  exaltation: [Cancer]
+  exaltation_degree: 15
+  detriment: [Gemini, Virgo]
+  fall: [Capricorn]
+
+Saturn:
+  domicile: [Capricorn, Aquarius]
+  exaltation: [Libra]
+  exaltation_degree: 21
+  detriment: [Cancer, Leo]
+  fall: [Aries]
+
+Uranus:
+  domicile: [Aquarius]
+  exaltation: [Scorpio]
+  exaltation_degree: 15
+  detriment: [Leo]
+  fall: [Taurus]
+
+Neptune:
+  domicile: [Pisces]
+  exaltation: [Leo]
+  exaltation_degree: 15
+  detriment: [Virgo]
+  fall: [Aquarius]
+
+Pluto:
+  domicile: [Scorpio]
+  exaltation: [Aries]
+  exaltation_degree: 15
+  detriment: [Taurus]
+  fall: [Libra]
+
+Chiron:
+  domicile: []
+  exaltation: []
+  detriment: []
+  fall: []
+
+North Node:
+  domicile: []
+  exaltation: [Taurus]
+  detriment: []
+  fall: [Scorpio]
+
+South Node:
+  domicile: []
+  exaltation: [Scorpio]
+  detriment: []
+  fall: [Taurus]
+
+Mean Node:
+  domicile: []
+  exaltation: [Taurus]
+  detriment: []
+  fall: [Scorpio]
+
+True Node:
+  domicile: []
+  exaltation: [Scorpio]
+  detriment: []
+  fall: [Taurus]

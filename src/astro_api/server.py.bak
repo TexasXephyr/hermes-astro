@@ -1,0 +1,548 @@
+#!/usr/bin/env python3
+"""
+Astrology JSON REST API server — Python stdlib only.
+Runs on localhost:8080.
+
+Phase 4 updates:
+- Full SQLite schema (people, events, charts, interpretations, api_keys)
+- New endpoints: /v1/people, /v1/people/{id}, /v1/people/{id}/charts,
+  /v1/charts/{chart_id}
+- All DB access via astro_data.db with parameterized queries.
+"""
+import json
+import os
+import sqlite3
+import sys
+import uuid
+from datetime import datetime, timezone
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from zoneinfo import ZoneInfo, available_timezones
+from urllib.parse import urlparse
+
+# ------------------------------------------------------------------
+# Ensure libswe.so can be found before we load our C extension.
+
+_SE_DIR = os.path.expanduser("~/swisseph_test/pyswisseph-2.10.3.2/libswe")
+_ld = os.environ.get("LD_LIBRARY_PATH", "")
+if _SE_DIR not in (_ld.split(":") if _ld else []):
+    os.environ["LD_LIBRARY_PATH"] = _SE_DIR + (":" + _ld if _ld else "")
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from astro_api.astro_ctypes import (
+    ac_init,
+    ac_cleanup,
+    ac_date_to_jd,
+    ac_calc_chart,
+    ac_detect_aspect,
+    calculate_aspects,
+    body_id_from_name,
+    orb_preset_from_name,
+    HOUSE_SYSTEMS,
+    AC_ASP_NONE,
+)
+from astro_data import db
+
+# ------------------------------------------------------------------
+# Defaults
+
+DEFAULT_POINTS = [
+    "Sun", "Moon", "Mercury", "Venus", "Mars",
+    "Jupiter", "Saturn", "Uranus", "Neptune", "Pluto",
+    "Mean Node", "Chiron",
+]
+
+# ------------------------------------------------------------------
+# Database
+
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "astro.db")
+_db_conn = None
+
+
+def get_db():
+    global _db_conn
+    if _db_conn is None:
+        _db_conn = db.init_db(DB_PATH)
+    return _db_conn
+
+
+_LEGACY_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "charts.db")
+
+
+def _migrate_legacy_charts():
+    if not os.path.exists(_LEGACY_DB) or os.path.getsize(_LEGACY_DB) == 0:
+        return
+    try:
+        old = sqlite3.connect(_LEGACY_DB, check_same_thread=False)
+        rows = old.execute(
+            "SELECT chart_id, name, birth_date, birth_time, timezone, latitude, longitude, house_system, points, orb_preset, chart_json, created_at FROM charts"
+        ).fetchall()
+        conn = get_db()
+        for row in rows:
+            (cid, name, bdate, btime, tz, lat, lon, hs, pts, orb, cjson, cat) = row
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO charts (chart_id, person_id, chart_type, calc_date, calc_options, positions, dignities, aspects, rendered_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (cid, None, "natal", cat, json.dumps({"house_system": hs, "points": pts, "orb_preset": orb}),
+                     cjson, None, json.dumps([]), None, cat),
+                )
+            except Exception:
+                pass
+        conn.commit()
+        old.close()
+    except Exception:
+        pass
+
+
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ------------------------------------------------------------------
+# Helpers
+
+def _json_response(handler, data, status=200):
+    body = json.dumps(data, indent=None, separators=(",", ":")).encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def _error(handler, message, status=400):
+    _json_response(handler, {"status": "error", "message": message}, status)
+
+
+def parse_datetime(date_str, time_str, tz_name):
+    if tz_name not in available_timezones():
+        raise ValueError(f"Unknown timezone: {tz_name}")
+    dt_naive = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
+    tz = ZoneInfo(tz_name)
+    dt = dt_naive.replace(tzinfo=tz)
+    offset = dt.utcoffset().total_seconds() / 3600.0
+    jd = ac_date_to_jd(dt_naive.year, dt_naive.month, dt_naive.day,
+                       dt_naive.hour, dt_naive.minute, dt_naive.second, offset)
+    return jd
+
+
+# ------------------------------------------------------------------
+# Route dispatch
+
+class AstroHandler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        pass
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path == "/v1/houses/systems":
+            self._handle_house_systems()
+        elif path == "/v1/people":
+            self._handle_list_people()
+        elif path.startswith("/v1/people/"):
+            self._dispatch_people_get(path)
+        elif path.startswith("/v1/charts/"):
+            self._handle_get_chart(path[len("/v1/charts/"):])
+        else:
+            _error(self, "Not found", 404)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length).decode("utf-8")
+        try:
+            payload = json.loads(body) if body else {}
+        except json.JSONDecodeError as e:
+            _error(self, f"Invalid JSON: {e}")
+            return
+
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path == "/v1/chart/natal":
+            self._handle_natal(payload)
+        elif path == "/v1/chart/transit":
+            self._handle_transit(payload)
+        elif path == "/v1/chart/synastry":
+            self._handle_synastry(payload)
+        elif path == "/v1/people":
+            self._handle_create_person(payload)
+        elif path.startswith("/v1/people/") and "/charts" in path:
+            self._dispatch_people_post(path, payload)
+        else:
+            _error(self, "Not found", 404)
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path.startswith("/v1/charts/"):
+            self._handle_delete_chart(path[len("/v1/charts/"):])
+        else:
+            _error(self, "Not found", 404)
+
+    # --------------------------------------------------------------
+    # Sub-dispatch
+
+    def _dispatch_people_get(self, path):
+        rest = path[len("/v1/people/"):]
+        parts = rest.split("/")
+        if len(parts) == 2 and parts[1] == "charts":
+            # GET /v1/people/{id}/charts is not implemented; chart creation is POST
+            _error(self, "Method not allowed", 405)
+        elif len(parts) == 1:
+            self._handle_get_person(parts[0])
+        else:
+            _error(self, "Not found", 404)
+
+    def _dispatch_people_post(self, path, payload):
+        rest = path[len("/v1/people/"):]
+        parts = rest.split("/")
+        if len(parts) == 2 and parts[1] == "charts":
+            self._handle_calc_chart_for_person(parts[0], payload)
+        else:
+            _error(self, "Not found", 404)
+
+    # --------------------------------------------------------------
+    # House systems
+
+    def _handle_house_systems(self):
+        systems = [{"code": code, "name": name} for code, name in HOUSE_SYSTEMS.items()]
+        systems.sort(key=lambda x: x["code"])
+        _json_response(self, {"status": "ok", "systems": systems})
+
+    # --------------------------------------------------------------
+    # People endpoints
+
+    def _handle_create_person(self, payload):
+        required = ["name", "birth_date", "birth_time", "timezone", "latitude", "longitude"]
+        missing = [f for f in required if payload.get(f) is None]
+        if missing:
+            _error(self, f"Missing required fields: {', '.join(missing)}")
+            return
+        try:
+            pid = db.add_person(
+                get_db(),
+                name=payload["name"],
+                birth_date=payload["birth_date"],
+                birth_time=payload["birth_time"],
+                timezone=payload["timezone"],
+                latitude=payload["latitude"],
+                longitude=payload["longitude"],
+                gender=payload.get("gender"),
+                phone=payload.get("phone"),
+                email=payload.get("email"),
+                address=payload.get("address"),
+                notes=payload.get("notes"),
+            )
+            p = db.get_person(get_db(), pid)
+            _json_response(self, {"status": "ok", "person": p})
+        except Exception as e:
+            _error(self, str(e), 500)
+
+    def _handle_get_person(self, person_id_str):
+        try:
+            pid = int(person_id_str)
+        except ValueError:
+            _error(self, "Invalid person ID", 400)
+            return
+        p = db.get_person(get_db(), pid)
+        if not p:
+            _error(self, "Person not found", 404)
+            return
+        _json_response(self, {"status": "ok", "person": p})
+
+    def _handle_list_people(self):
+        people = db.list_people(get_db())
+        _json_response(self, {"status": "ok", "people": people})
+
+    # --------------------------------------------------------------
+    # Chart-for-person endpoint
+
+    def _handle_calc_chart_for_person(self, person_id_str, options):
+        try:
+            pid = int(person_id_str)
+        except ValueError:
+            _error(self, "Invalid person ID", 400)
+            return
+        p = db.get_person(get_db(), pid)
+        if not p:
+            _error(self, "Person not found", 404)
+            return
+
+        hs = options.get("house_system", "K")
+        points_names = options.get("points", DEFAULT_POINTS)
+        orb_name = options.get("orb_preset", "Modern")
+
+        try:
+            jd = parse_datetime(p["birth_date"], p["birth_time"], p["timezone"])
+        except Exception as e:
+            _error(self, str(e), 400)
+            return
+
+        try:
+            body_ids = [body_id_from_name(pn) for pn in points_names]
+            chart_data = ac_calc_chart(jd, p["latitude"], p["longitude"], body_ids, hs)
+            orb_preset = orb_preset_from_name(orb_name)
+            aspects = calculate_aspects(chart_data["bodies"], orb_preset)
+
+            chart_id = str(uuid.uuid4())
+            positions = {
+                "bodies": chart_data["bodies"],
+                "houses": chart_data["houses"],
+                "angles": {
+                    "ascendant": chart_data["ascendant"],
+                    "mc": chart_data["mc"],
+                    "armc": chart_data["armc"],
+                    "vertex": chart_data["vertex"],
+                },
+            }
+            db.add_chart(
+                get_db(),
+                chart_id=chart_id,
+                person_id=pid,
+                chart_type="natal",
+                calc_date=_now_iso(),
+                calc_options={"house_system": hs, "points": points_names, "orb_preset": orb_name},
+                positions=positions,
+                aspects=aspects,
+            )
+
+            response = {
+                "status": "ok",
+                "chart_id": chart_id,
+                "person_id": pid,
+                "bodies": chart_data["bodies"],
+                "houses": chart_data["houses"],
+                "aspects": aspects,
+                "angles": positions["angles"],
+            }
+            _json_response(self, response)
+        except Exception as e:
+            _error(self, str(e), 500)
+
+    # --------------------------------------------------------------
+    # Chart retrieval / deletion
+
+    def _handle_get_chart(self, chart_id):
+        c = db.get_chart(get_db(), chart_id)
+        if not c:
+            _error(self, "Chart not found", 404)
+            return
+        _json_response(self, {"status": "ok", "chart": c})
+
+    def _handle_delete_chart(self, chart_id):
+        ok = db.delete_chart(get_db(), chart_id)
+        if not ok:
+            _error(self, "Chart not found", 404)
+            return
+        _json_response(self, {"status": "ok", "deleted": chart_id})
+
+    # --------------------------------------------------------------
+    # Legacy chart endpoints
+
+    def _handle_natal(self, payload):
+        try:
+            person = payload.get("person", {})
+            options = payload.get("options", {})
+
+            name = person.get("name", "Unknown")
+            date = person.get("birth_date")
+            time = person.get("birth_time")
+            tz = person.get("timezone")
+            lat = person.get("latitude")
+            lon = person.get("longitude")
+
+            if not all([date, time, tz, lat is not None, lon is not None]):
+                _error(self, "Missing required person fields")
+                return
+
+            hs = options.get("house_system", "K")
+            points_names = options.get("points", DEFAULT_POINTS)
+            orb_name = options.get("orb_preset", "Modern")
+
+            jd = parse_datetime(date, time, tz)
+            body_ids = [body_id_from_name(p) for p in points_names]
+            chart_data = ac_calc_chart(jd, lat, lon, body_ids, hs)
+            orb_preset = orb_preset_from_name(orb_name)
+            aspects = calculate_aspects(chart_data["bodies"], orb_preset)
+
+            chart_id = str(uuid.uuid4())
+            positions = {
+                "bodies": chart_data["bodies"],
+                "houses": chart_data["houses"],
+                "angles": {
+                    "ascendant": chart_data["ascendant"],
+                    "mc": chart_data["mc"],
+                    "armc": chart_data["armc"],
+                    "vertex": chart_data["vertex"],
+                },
+            }
+            db.add_chart(
+                get_db(),
+                chart_id=chart_id,
+                chart_type="natal",
+                calc_date=_now_iso(),
+                calc_options={"house_system": hs, "points": points_names, "orb_preset": orb_name},
+                positions=positions,
+                aspects=aspects,
+            )
+
+            response = {
+                "status": "ok",
+                "chart_id": chart_id,
+                "bodies": chart_data["bodies"],
+                "houses": chart_data["houses"],
+                "aspects": aspects,
+                "angles": positions["angles"],
+            }
+            _json_response(self, response)
+        except Exception as e:
+            _error(self, str(e), 500)
+
+    def _handle_transit(self, payload):
+        try:
+            natal_id = payload.get("natal_chart_id")
+            date = payload.get("date")
+            time = payload.get("time")
+            options = payload.get("options", {})
+
+            if not natal_id or not date or not time:
+                _error(self, "Missing natal_chart_id, date, or time")
+                return
+
+            natal_row = db.get_chart(get_db(), natal_id)
+            if not natal_row:
+                _error(self, "Natal chart not found", 404)
+                return
+
+            calc_opts = natal_row.get("calc_options") or {}
+            hs = calc_opts.get("house_system", "K")
+            points_names = calc_opts.get("points", DEFAULT_POINTS)
+            orb_name = calc_opts.get("orb_preset", "Modern")
+
+            lat = lon = tz = None
+            if natal_row.get("person_id"):
+                person = db.get_person(get_db(), natal_row["person_id"])
+                if person:
+                    lat = person["latitude"]
+                    lon = person["longitude"]
+                    tz = person["timezone"]
+            if lat is None:
+                _error(self, "Natal chart missing location data", 400)
+                return
+
+            jd = parse_datetime(date, time, tz)
+            body_ids = [body_id_from_name(p) for p in points_names]
+            transiting = ac_calc_chart(jd, lat, lon, body_ids, hs)
+            orb_preset = orb_preset_from_name(orb_name)
+
+            natal_bodies = natal_row["positions"]["bodies"]
+            transit_bodies = transiting["bodies"]
+
+            cross_aspects = []
+            for nb in natal_bodies:
+                for tb in transit_bodies:
+                    asp = ac_detect_aspect(nb["longitude"], nb["speed"],
+                                           tb["longitude"], tb["speed"],
+                                           orb_preset)
+                    if asp["aspect"] != AC_ASP_NONE:
+                        cross_aspects.append({
+                            "natal_body": nb["name"],
+                            "transit_body": tb["name"],
+                            "aspect_id": asp["aspect"],
+                            "aspect_name": asp["aspect_name"],
+                            "exact_angle": asp["exact_angle"],
+                            "actual_angle": asp["actual_angle"],
+                            "orb": asp["orb"],
+                            "applying": asp["applying"],
+                        })
+
+            response = {
+                "status": "ok",
+                "natal_chart_id": natal_id,
+                "bodies": natal_bodies,
+                "transiting_bodies": transit_bodies,
+                "cross_aspects": cross_aspects,
+            }
+            _json_response(self, response)
+        except Exception as e:
+            _error(self, str(e), 500)
+
+    def _handle_synastry(self, payload):
+        try:
+            a_id = payload.get("person_a")
+            b_id = payload.get("person_b")
+            options = payload.get("options", {})
+
+            if not a_id or not b_id:
+                _error(self, "Missing person_a or person_b chart IDs")
+                return
+
+            chart_a = db.get_chart(get_db(), a_id)
+            chart_b = db.get_chart(get_db(), b_id)
+            if not chart_a:
+                _error(self, "Chart A not found", 404)
+                return
+            if not chart_b:
+                _error(self, "Chart B not found", 404)
+                return
+
+            calc_opts = chart_a.get("calc_options") or {}
+            orb_name = options.get("orb_preset", calc_opts.get("orb_preset", "Modern"))
+            orb_preset = orb_preset_from_name(orb_name)
+
+            bodies_a = chart_a["positions"]["bodies"]
+            bodies_b = chart_b["positions"]["bodies"]
+
+            cross_aspects = []
+            for ba in bodies_a:
+                for bb in bodies_b:
+                    asp = ac_detect_aspect(ba["longitude"], ba["speed"],
+                                           bb["longitude"], bb["speed"],
+                                           orb_preset)
+                    if asp["aspect"] != AC_ASP_NONE:
+                        cross_aspects.append({
+                            "body_a": ba["name"],
+                            "body_b": bb["name"],
+                            "aspect_id": asp["aspect"],
+                            "aspect_name": asp["aspect_name"],
+                            "exact_angle": asp["exact_angle"],
+                            "actual_angle": asp["actual_angle"],
+                            "orb": asp["orb"],
+                            "applying": asp["applying"],
+                        })
+
+            response = {
+                "status": "ok",
+                "person_a": a_id,
+                "person_b": b_id,
+                "cross_aspects": cross_aspects,
+            }
+            _json_response(self, response)
+        except Exception as e:
+            _error(self, str(e), 500)
+
+
+# ------------------------------------------------------------------
+# Main
+
+def run_server(host="localhost", port=8080):
+    ac_init()
+    _migrate_legacy_charts()
+    server = HTTPServer((host, port), AstroHandler)
+    print(f"Astrology API server listening on http://{host}:{port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        ac_cleanup()
+        global _db_conn
+        if _db_conn:
+            _db_conn.close()
+            _db_conn = None
+
+
+if __name__ == "__main__":
+    run_server()

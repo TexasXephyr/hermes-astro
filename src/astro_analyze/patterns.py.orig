@@ -1,0 +1,402 @@
+"""
+Chart pattern detection: grand trine, T-square, grand cross,
+stellium, Yod, cradle, kite.
+Stdlib only.
+"""
+import math
+
+# ------------------------------------------------------------------
+# Constants
+
+ASPECT_CONJUNCTION = 0
+ASPECT_SEMISEXTILE = 1
+ASPECT_SEMISQUARE = 2
+ASPECT_SEXTILE = 3
+ASPECT_SQUARE = 4
+ASPECT_TRINE = 5
+ASPECT_SESQUIQUADRATE = 6
+ASPECT_QUINCUNX = 7
+ASPECT_OPPOSITION = 8
+
+ASP_NAME = {
+    ASPECT_CONJUNCTION: "conjunction",
+    ASPECT_SEXTILE: "sextile",
+    ASPECT_SQUARE: "square",
+    ASPECT_TRINE: "trine",
+    ASPECT_OPPOSITION: "opposition",
+    ASPECT_QUINCUNX: "quincunx",
+    ASPECT_SEMISEXTILE: "semisextile",
+    ASPECT_SEMISQUARE: "semisquare",
+    ASPECT_SESQUIQUADRATE: "sesquiquadrate",
+}
+
+def _orb_ok(actual: float, target: float, orb: float) -> bool:
+    """Check if actual angle is within orb of target, handling 360 wrap."""
+    diff = abs(actual - target)
+    diff = min(diff, 360.0 - diff)
+    return diff <= orb
+
+def _element(sign: int) -> str:
+    return ["fire", "earth", "air", "water",
+            "fire", "earth", "air", "water",
+            "fire", "earth", "air", "water"][sign]
+
+# ------------------------------------------------------------------
+# Helpers: build aspect lookup tables
+
+def _build_aspect_maps(aspects: list[dict], orb_override: float = None) -> dict:
+    """
+    Return adjacency maps:
+      aspect_map[(a,b)] = aspect_dict  (sorted tuple)
+      by_type[aspect_id] = [(a,b, aspect_dict), ...]
+    """
+    aspect_map = {}
+    by_type = {}
+    for asp in aspects:
+        a = asp["body_a"]
+        b = asp["body_b"]
+        key = tuple(sorted([a, b]))
+        # prefer tighter orb if duplicate
+        existing = aspect_map.get(key)
+        if existing is None or asp["orb"] < existing["orb"]:
+            aspect_map[key] = asp
+        by_type.setdefault(asp["aspect_id"], []).append((a, b, asp))
+    return aspect_map, by_type
+
+def _get_aspect(a: str, b: str, aspect_map: dict):
+    key = tuple(sorted([a, b]))
+    return aspect_map.get(key)
+
+def _aspect_between(a: str, b: str, target_aspect: int, aspect_map: dict) -> bool:
+    asp = _get_aspect(a, b, aspect_map)
+    if asp is None:
+        return False
+    return asp["aspect_id"] == target_aspect
+
+def _orb_for_pair(a: str, b: str, aspect_map: dict) -> float:
+    asp = _get_aspect(a, b, aspect_map)
+    return asp["orb"] if asp else 999.0
+
+# ------------------------------------------------------------------
+# Pattern detectors
+
+def _detect_grand_trine(bodies: list[dict], aspect_map: dict, by_type: dict) -> list[dict]:
+    patterns = []
+    trines = by_type.get(ASPECT_TRINE, [])
+    # Build adjacency list for trine edges
+    adj = {b["name"]: set() for b in bodies}
+    for a, b, asp in trines:
+        adj[a].add(b)
+        adj[b].add(a)
+
+    # Find triangles
+    names = [b["name"] for b in bodies]
+    seen = set()
+    for i, a in enumerate(names):
+        for b in adj.get(a, set()):
+            if b <= a:
+                continue
+            for c in adj.get(b, set()):
+                if c <= b or c == a:
+                    continue
+                if a in adj.get(c, set()):
+                    triplet = tuple(sorted([a, b, c]))
+                    if triplet in seen:
+                        continue
+                    seen.add(triplet)
+                    # same element check via first body's sign
+                    signs = {}
+                    for body in bodies:
+                        signs[body["name"]] = body["sign"]
+                    elems = {_element(signs[n]) for n in triplet}
+                    if len(elems) == 1:
+                        orbs = [_orb_for_pair(x, y, aspect_map) for x, y in [(a,b),(b,c),(a,c)]]
+                        patterns.append({
+                            "type": "Grand Trine",
+                            "bodies": list(triplet),
+                            "element": list(elems)[0],
+                            "orbs": orbs,
+                            "max_orb": max(orbs),
+                        })
+    return patterns
+
+def _detect_t_square(bodies: list[dict], aspect_map: dict, by_type: dict) -> list[dict]:
+    patterns = []
+    oppositions = by_type.get(ASPECT_OPPOSITION, [])
+    squares = by_type.get(ASPECT_SQUARE, [])
+
+    # quick membership sets
+    square_pairs = set()
+    for a, b, asp in squares:
+        square_pairs.add(tuple(sorted([a, b])))
+
+    for a, b, asp_ab in oppositions:
+        # find apex c such that a-square-c and b-square-c
+        for c in [n["name"] for n in bodies]:
+            if c in (a, b):
+                continue
+            if tuple(sorted([a, c])) in square_pairs and tuple(sorted([b, c])) in square_pairs:
+                orbs = [
+                    _orb_for_pair(a, b, aspect_map),
+                    _orb_for_pair(a, c, aspect_map),
+                    _orb_for_pair(b, c, aspect_map),
+                ]
+                patterns.append({
+                    "type": "T-Square",
+                    "bodies": [a, b, c],
+                    "apex": c,
+                    "orbs": orbs,
+                    "max_orb": max(orbs),
+                })
+    # deduplicate by sorted bodies
+    uniq = {}
+    for p in patterns:
+        key = tuple(sorted(p["bodies"]))
+        if key not in uniq or p["max_orb"] < uniq[key]["max_orb"]:
+            uniq[key] = p
+    return list(uniq.values())
+
+def _detect_grand_cross(bodies: list[dict], aspect_map: dict, by_type: dict) -> list[dict]:
+    patterns = []
+    oppositions = by_type.get(ASPECT_OPPOSITION, [])
+    squares = by_type.get(ASPECT_SQUARE, [])
+
+    square_pairs = set()
+    for a, b, asp in squares:
+        square_pairs.add(tuple(sorted([a, b])))
+
+    # Build opposition pairs
+    opp_pairs = []
+    seen_opp = set()
+    for a, b, asp in oppositions:
+        key = tuple(sorted([a, b]))
+        if key in seen_opp:
+            continue
+        seen_opp.add(key)
+        opp_pairs.append((a, b))
+
+    # Find two perpendicular oppositions where ends are all square to each other
+    for i, (a1, b1) in enumerate(opp_pairs):
+        for a2, b2 in opp_pairs[i+1:]:
+            # all four distinct
+            quad = {a1, b1, a2, b2}
+            if len(quad) != 4:
+                continue
+            # every pair should be square or opposite
+            needed = [
+                tuple(sorted([a1, a2])),
+                tuple(sorted([a1, b2])),
+                tuple(sorted([b1, a2])),
+                tuple(sorted([b1, b2])),
+            ]
+            if all(p in square_pairs or p in seen_opp for p in needed):
+                orbs = []
+                for x, y in [(a1,b1),(a2,b2),(a1,a2),(a1,b2),(b1,a2),(b1,b2)]:
+                    orbs.append(_orb_for_pair(x, y, aspect_map))
+                patterns.append({
+                    "type": "Grand Cross",
+                    "bodies": sorted(list(quad)),
+                    "orbs": orbs,
+                    "max_orb": max(orbs),
+                })
+    # dedup
+    uniq = {}
+    for p in patterns:
+        key = tuple(sorted(p["bodies"]))
+        if key not in uniq or p["max_orb"] < uniq[key]["max_orb"]:
+            uniq[key] = p
+    return list(uniq.values())
+
+def _detect_stellium(bodies: list[dict], sign_orb: float = 8.0, house_orb: float = 0.0) -> list[dict]:
+    patterns = []
+    # By sign
+    sign_groups = {}
+    for b in bodies:
+        sign_groups.setdefault(b["sign"], []).append(b["name"])
+    for sign, names in sign_groups.items():
+        if len(names) >= 3:
+            patterns.append({
+                "type": "Stellium",
+                "bodies": names,
+                "basis": "sign",
+                "sign": sign,
+            })
+    # By house
+    house_groups = {}
+    for b in bodies:
+        house_groups.setdefault(b["house"], []).append(b["name"])
+    for house, names in house_groups.items():
+        if len(names) >= 3:
+            # avoid duplicate if exact same set already reported by sign
+            existing_bodies = [set(p["bodies"]) for p in patterns if p["type"] == "Stellium"]
+            if set(names) not in existing_bodies:
+                patterns.append({
+                    "type": "Stellium",
+                    "bodies": names,
+                    "basis": "house",
+                    "house": house,
+                })
+    return patterns
+
+def _detect_yod(bodies: list[dict], aspect_map: dict, by_type: dict) -> list[dict]:
+    patterns = []
+    sextiles = by_type.get(ASPECT_SEXTILE, [])
+    quincunxes = by_type.get(ASPECT_QUINCUNX, [])
+    quinc_pairs = set()
+    for a, b, asp in quincunxes:
+        quinc_pairs.add(tuple(sorted([a, b])))
+
+    for a, b, asp in sextiles:
+        # find apex c quincunx to both a and b
+        for c in [n["name"] for n in bodies]:
+            if c in (a, b):
+                continue
+            if tuple(sorted([a, c])) in quinc_pairs and tuple(sorted([b, c])) in quinc_pairs:
+                orbs = [
+                    _orb_for_pair(a, b, aspect_map),
+                    _orb_for_pair(a, c, aspect_map),
+                    _orb_for_pair(b, c, aspect_map),
+                ]
+                patterns.append({
+                    "type": "Yod",
+                    "bodies": [a, b, c],
+                    "apex": c,
+                    "orbs": orbs,
+                    "max_orb": max(orbs),
+                })
+    uniq = {}
+    for p in patterns:
+        key = tuple(sorted(p["bodies"]))
+        if key not in uniq or p["max_orb"] < uniq[key]["max_orb"]:
+            uniq[key] = p
+    return list(uniq.values())
+
+def _detect_cradle(bodies: list[dict], aspect_map: dict, by_type: dict) -> list[dict]:
+    patterns = []
+    sextiles = by_type.get(ASPECT_SEXTILE, [])
+    squares = by_type.get(ASPECT_SQUARE, [])
+
+    sext_pairs = set()
+    for a, b, asp in sextiles:
+        sext_pairs.add(tuple(sorted([a, b])))
+    sq_pairs = set()
+    for a, b, asp in squares:
+        sq_pairs.add(tuple(sorted([a, b])))
+
+    names = [b["name"] for b in bodies]
+    n = len(names)
+    # Look for 4-body loop: a-s-b-s-c-d with a-sq-c and b-sq-d
+    for ia, a in enumerate(names):
+        for ib in range(ia+1, n):
+            b = names[ib]
+            if tuple(sorted([a, b])) not in sext_pairs:
+                continue
+            for ic in range(ib+1, n):
+                c = names[ic]
+                if tuple(sorted([a, c])) not in sq_pairs:
+                    continue
+                for id_ in range(ic+1, n):
+                    d = names[id_]
+                    if tuple(sorted([b, d])) not in sq_pairs:
+                        continue
+                    if tuple(sorted([c, d])) not in sext_pairs:
+                        continue
+                    # rectangle found
+                    quad = tuple(sorted([a, b, c, d]))
+                    orbs = [
+                        _orb_for_pair(a, b, aspect_map),
+                        _orb_for_pair(b, d, aspect_map),
+                        _orb_for_pair(c, d, aspect_map),
+                        _orb_for_pair(a, c, aspect_map),
+                    ]
+                    patterns.append({
+                        "type": "Cradle",
+                        "bodies": list(quad),
+                        "orbs": orbs,
+                        "max_orb": max(orbs),
+                    })
+    uniq = {}
+    for p in patterns:
+        key = tuple(sorted(p["bodies"]))
+        if key not in uniq or p["max_orb"] < uniq[key]["max_orb"]:
+            uniq[key] = p
+    return list(uniq.values())
+
+def _detect_kite(bodies: list[dict], aspect_map: dict, by_type: dict) -> list[dict]:
+    patterns = []
+    # Kite = grand trine + opposition from one body to the apex
+    # Actually easier: grand trine (a,b,c) + d opposite to apex
+    grand_trines = _detect_grand_trine(bodies, aspect_map, by_type)
+    oppositions = by_type.get(ASPECT_OPPOSITION, [])
+    opp_map = {}
+    for a, b, asp in oppositions:
+        key = tuple(sorted([a, b]))
+        opp_map[key] = asp
+
+    for gt in grand_trines:
+        apex_candidates = gt["bodies"]
+        for apex in apex_candidates:
+            others = [x for x in apex_candidates if x != apex]
+            # find d such that d is opposite apex and sextile to the other two
+            for d in [n["name"] for n in bodies]:
+                if d in apex_candidates:
+                    continue
+                if tuple(sorted([apex, d])) not in opp_map:
+                    continue
+                # d must be sextile to both other trine members
+                ok = True
+                for o in others:
+                    asp = _get_aspect(d, o, aspect_map)
+                    if asp is None or asp["aspect_id"] != ASPECT_SEXTILE:
+                        ok = False
+                        break
+                if not ok:
+                    continue
+                orbs = [
+                    _orb_for_pair(apex, d, aspect_map),
+                ] + gt["orbs"]
+                # add sextile orbs
+                for o in others:
+                    orbs.append(_orb_for_pair(d, o, aspect_map))
+                patterns.append({
+                    "type": "Kite",
+                    "bodies": sorted(apex_candidates + [d]),
+                    "apex": apex,
+                    "opposition": [apex, d],
+                    "orbs": orbs,
+                    "max_orb": max(orbs),
+                })
+    uniq = {}
+    for p in patterns:
+        key = tuple(sorted(p["bodies"]))
+        if key not in uniq or p["max_orb"] < uniq[key]["max_orb"]:
+            uniq[key] = p
+    return list(uniq.values())
+
+# ------------------------------------------------------------------
+# Public API
+
+def detect_patterns(chart_data: dict) -> list:
+    """
+    Detect patterns in chart data dict (as produced by ac_calc_chart).
+    Returns list of pattern dicts with type, bodies, orbs.
+    """
+    bodies = chart_data.get("bodies", [])
+    aspects = chart_data.get("aspects", [])
+    if not bodies or not aspects:
+        return []
+
+    aspect_map, by_type = _build_aspect_maps(aspects)
+
+    results = []
+    results.extend(_detect_grand_trine(bodies, aspect_map, by_type))
+    results.extend(_detect_t_square(bodies, aspect_map, by_type))
+    results.extend(_detect_grand_cross(bodies, aspect_map, by_type))
+    results.extend(_detect_stellium(bodies))
+    results.extend(_detect_yod(bodies, aspect_map, by_type))
+    results.extend(_detect_cradle(bodies, aspect_map, by_type))
+    results.extend(_detect_kite(bodies, aspect_map, by_type))
+
+    # sort by max_orb ascending (tighter = stronger)
+    results.sort(key=lambda x: x.get("max_orb", 999))
+    return results
