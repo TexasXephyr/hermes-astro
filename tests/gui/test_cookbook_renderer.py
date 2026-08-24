@@ -34,8 +34,16 @@ def check(label, expr):
         failed += 1
 
 
-def _realize(widget):
+def _realize(widget, width=900, height=700):
+    """Realize a widget inside a sized window and pump the main loop.
+
+    A fixed window size matters for wrap-dependent layout (the cookbook
+    detail label): inside a bare ScrolledWindow the content gets
+    unbounded width and never wraps, which is not how the real window
+    lays it out.
+    """
     win = Gtk.Window()
+    win.set_default_size(width, height)
     sw = Gtk.ScrolledWindow()
     sw.set_child(widget)
     win.set_child(sw)
@@ -169,6 +177,46 @@ def _missing_selection_warns():
 
 
 check("cookbook list: missing row warns instead of inventing prose", _missing_selection_warns)
+
+
+def _detail_grows_with_content():
+    """The detail pane must be above the list and sized to its content
+    (variable depth) — no fixed cap that clips the prose.
+
+    Measures the label's natural height at a bounded width (the way the
+    real notebook constrains it) using the markup path the selection
+    handler uses. A short entry must measure shorter than a long one.
+    """
+    short_entry = CookbookEntry(title="Short", subtitle="", text="One line.")
+    long_text = "Long prose. " * 40
+    long_entry = CookbookEntry(title="Long", subtitle="", text=long_text)
+
+    def _markup(entry):
+        return f"<b>{entry.title}</b>\n\n{entry.text}"
+
+    def _measure(entry, width):
+        view = build_cookbook_list([entry])
+        view.detail_label.set_markup(_markup(entry))
+        return view.detail_label.measure(Gtk.Orientation.VERTICAL, width)[1]
+
+    width = 600  # typical panel width in the real window
+    short_height = _measure(short_entry, width)
+    long_height = _measure(long_entry, width)
+
+    assert long_height > short_height, (
+        f"detail pane not variable depth: short={short_height} long={long_height}"
+    )
+    # Detail pane must sit ABOVE the list: the first child of the box is
+    # the detail label, the second is the list's ScrolledWindow.
+    view = build_cookbook_list([short_entry])
+    first_child = view.get_first_child()
+    assert isinstance(first_child, Gtk.Label), f"first child: {type(first_child)}"
+    second_child = first_child.get_next_sibling()
+    assert second_child is not None and isinstance(second_child, Gtk.ScrolledWindow)
+    assert view.listbox is not None
+
+
+check("cookbook list: detail pane above list, variable depth (no clip)", _detail_grows_with_content)
 
 
 print(f"\n{passed} passed, {failed} failed")

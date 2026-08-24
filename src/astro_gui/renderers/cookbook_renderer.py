@@ -174,9 +174,10 @@ def _entry_row(entry: CookbookEntry) -> Gtk.ListBoxRow:
 def build_cookbook_list(entries: list[CookbookEntry]) -> Gtk.Widget:
     """Build the selectable cookbook list + detail pane.
 
-    Returns a vertical Box: the ListBox (scrollable) on top and a detail
-    pane below showing the selected row's prose. The detail pane is
-    reachable as `box.detail_label` for tests.
+    Returns a vertical Box: the detail pane on top showing the selected
+    row's prose (sized to its content — variable depth, never clipped),
+    and the scrollable ListBox below taking the remaining space. The
+    detail pane is reachable as `box.detail_label` for tests.
     """
     listbox = Gtk.ListBox()
     listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
@@ -204,11 +205,12 @@ def build_cookbook_list(entries: list[CookbookEntry]) -> Gtk.Widget:
     detail.set_selectable(True)
     detail.set_text("Select a placement to see its corpus interpretation.")
 
-    detail_scroll = Gtk.ScrolledWindow()
-    detail_scroll.set_vexpand(False)
-    detail_scroll.set_max_content_height(160)
-    detail_scroll.set_child(detail)
-
+    # Detail pane above the list, sized to its content. The label sits
+    # directly in the vertical box (NO ScrolledWindow wrapper): the box
+    # measures it at the real width, the text wraps, and its natural
+    # height grows with the prose — so the full text for a planet or
+    # aspect is always visible (variable depth). The list below takes
+    # whatever space remains and scrolls.
     def _on_row_selected(_listbox, row):
         if row is None:
             return
@@ -225,8 +227,8 @@ def build_cookbook_list(entries: list[CookbookEntry]) -> Gtk.Widget:
     listbox.connect("row-selected", _on_row_selected)
 
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    box.append(detail)
     box.append(scroll)
-    box.append(detail_scroll)
     box.detail_label = detail
     box.listbox = listbox
     return box
