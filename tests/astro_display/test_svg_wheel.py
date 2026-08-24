@@ -1,4 +1,5 @@
 """Unit tests for astro_display SVG wheel renderer."""
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -147,6 +148,18 @@ def test_render_natal_no_clipped_signs(renderer):
         y = float(m.group(2))
         assert 0 <= x <= 600, f"text x out of canvas: {x}"
         assert 0 <= y <= 600, f"text y out of canvas: {y}"
+
+
+def test_glyph_paths_are_y_flipped():
+    """Glyph paths are embedded with a negative-y scale (upright in SVG)."""
+    from astro_display.svg.wheel import _path_element
+    el = _path_element("Aries", 100, 100, 20)
+    assert "scale(" in el
+    # The transform must flip y: scale(s, -s)
+    m = re.search(r"scale\(([0-9.]+),(-[0-9.]+)\)", el)
+    assert m is not None, f"Aries glyph must use a y-flipped scale, got: {el}"
+    assert float(m.group(1)) > 0
+    assert float(m.group(2)) < 0
 
 
 def test_render_natal_scale_applied(renderer):

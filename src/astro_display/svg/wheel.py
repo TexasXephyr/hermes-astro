@@ -107,26 +107,26 @@ def _path_element(name: str, x: float, y: float, size: float,
     to fit that height while preserving aspect ratio. anchor controls
     horizontal placement: 'center' centers on x, 'right' puts the glyph's
     right edge at x (for retrograde subscript).
+
+    The stored outlines are in y-up font units; SVG is y-down, so the
+    transform flips y (scale(s, -s)) and the translate compensates using
+    the glyph's stored center (cx, cy) — this keeps glyphs upright.
     """
     entry = ALL.get(name)
     if entry is None:
         return ""
-    scale = size / entry["h"]
-    w = entry["w"] * scale
-    h = entry["h"] * scale
+    s = size / entry["h"]
+    # y-flip: x' = dx + s*px,  y' = dy - s*py  (font py is y-up)
     if anchor == "right":
-        # right edge at x: path coords are x - w + (cx - x0)*scale ...
-        # Simpler: translate by (x - w, y - h/2) and let the path draw
-        # with its own origin at the glyph's bounding-box left.
-        dx = x - w
-        dy = y - h / 2.0
+        # right edge (cx + w/2) at x, vertical center at y
+        dx = x - (entry["cx"] + entry["w"] / 2.0) * s
     else:
-        dx = x - w / 2.0
-        dy = y - h / 2.0
+        dx = x - entry["cx"] * s
+    dy = y + entry["cy"] * s
     op = f' opacity="{opacity:.2f}"' if opacity < 1.0 else ""
     return (
         f'    <path d="{entry["path"]}" fill="{fill}"{op} '
-        f'transform="translate({dx:.2f},{dy:.2f}) scale({scale:.4f})"/>\n'
+        f'transform="translate({dx:.2f},{dy:.2f}) scale({s:.4f},{-s:.4f})"/>\n'
     )
 
 
