@@ -553,6 +553,31 @@ class AstroClient:
         transit_data = ac_calc_chart(jd, meta["latitude"], meta["longitude"],
                                      body_ids, meta["house_system"])
         transit_bodies = _insert_south_node(transit_data["bodies"])
+
+        # Cross-aspects: transiting bodies vs natal bodies (review item 14)
+        orb_name = meta.get("orb_preset", "Modern")
+        preset = orb_preset_from_name(orb_name)
+        natal_bodies = natal["bodies"]
+        cross_aspects = []
+        for tb in transit_bodies:
+            for nb in natal_bodies:
+                asp = ac_detect_aspect(
+                    tb["longitude"], tb["speed"],
+                    nb["longitude"], nb["speed"],
+                    preset,
+                )
+                if asp["aspect"] != AC_ASP_NONE:
+                    cross_aspects.append({
+                        "transit_body": tb["name"],
+                        "natal_body": nb["name"],
+                        "aspect_id": asp["aspect"],
+                        "aspect_name": asp["aspect_name"],
+                        "exact_angle": asp["exact_angle"],
+                        "actual_angle": asp["actual_angle"],
+                        "orb": asp["orb"],
+                        "applying": asp["applying"],
+                    })
+
         return {
             "status": "ok",
             "natal_chart_id": chart_id,
@@ -564,6 +589,7 @@ class AstroClient:
                 "ascendant": transit_data["ascendant"],
                 "mc": transit_data["mc"],
             },
+            "cross_aspects": cross_aspects,
         }
 
     def period_impact(self, chart_id: str, date: str, orb_days: int = 7,

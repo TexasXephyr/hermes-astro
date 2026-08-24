@@ -215,8 +215,17 @@ class WheelRenderer:
         width: int = 600,
         height: int = 600,
         scale: float = 1.0,
+        aspect_mode: str = "transit-natal",
     ) -> str:
-        """Return an SVG string for a transit wheel (two-ring variant)."""
+        """Return an SVG string for a transit wheel (two-ring variant).
+
+        aspect_mode controls which aspect lines are drawn:
+          - "transit-natal" (default): transiting bodies vs natal bodies
+          - "transit-transit": aspects among transiting bodies only
+          - "both": transit-natal + transit-transit
+        Natal-natal aspects are never drawn on the transit wheel (review
+        item 14).
+        """
         old_w, old_h = self.width, self.height
         old_cx, old_cy = self.cx, self.cy
         old_ro, old_rp, old_ra, old_rs = self.R_outer, self.R_planet, self.R_aspect, self.R_sign
@@ -232,7 +241,6 @@ class WheelRenderer:
         natal_houses = natal_data.get("houses", [])
         natal_bodies = natal_data.get("bodies", [])
         transit_bodies = transit_data.get("bodies", [])
-        natal_aspects = natal_data.get("aspects", [])
         natal_angles = natal_data.get("angles", {})
 
         parts: List[str] = []
@@ -249,9 +257,19 @@ class WheelRenderer:
         parts.extend(self._render_sign_ticks(ascendant))
         parts.extend(self._render_sign_labels(ascendant))
 
-        body_lookup = self._aspectable_lookup(natal_bodies, natal_angles)
-        natal_aspects = self._with_asc_aspects(natal_bodies, natal_angles, natal_aspects)
-        parts.extend(self._render_aspects(natal_aspects, body_lookup, ascendant))
+        # Aspect lines per mode (review items 14, 15)
+        natal_lookup = {b["name"]: b["longitude"] for b in natal_bodies}
+        transit_lookup = {b["name"]: b["longitude"] for b in transit_bodies}
+        if aspect_mode in ("transit-natal", "both"):
+            cross = transit_data.get("cross_aspects", [])
+            parts.extend(self._render_cross_aspects(
+                cross, transit_lookup, natal_lookup, ascendant,
+                r_a=self.R_aspect - 20, r_b=self.R_aspect + 20,
+            ))
+        if aspect_mode in ("transit-transit", "both"):
+            # aspects among transiting bodies: compute on the fly
+            transit_aspects = self._compute_inner_aspects(transit_bodies)
+            parts.extend(self._render_aspects(transit_aspects, transit_lookup, ascendant))
 
         parts.extend(self._render_planets(natal_bodies, ascendant))
         parts.extend(self._render_angle_points(natal_angles, ascendant))
@@ -279,6 +297,28 @@ class WheelRenderer:
         self.R_outer, self.R_planet, self.R_aspect, self.R_sign = old_ro, old_rp, old_ra, old_rs
 
         return "".join(parts)
+
+    def _compute_inner_aspects(self, bodies: List[Dict]) -> List[Dict]:
+        """Compute aspects among a single set of bodies (e.g. transit-transit)."""
+        from astro_api.astro_ctypes import ac_detect_aspect, orb_preset_from_name, AC_ASP_NONE
+        preset = orb_preset_from_name("Modern")
+        aspects = []
+        n = len(bodies)
+        for i in range(n):
+            for j in range(i + 1, n):
+                a = bodies[i]
+                b = bodies[j]
+                asp = ac_detect_aspect(a["longitude"], a["speed"],
+                                       b["longitude"], b["speed"], preset)
+                if asp["aspect"] != AC_ASP_NONE:
+                    aspects.append({
+                        "body_a": a["name"],
+                        "body_b": b["name"],
+                        "aspect_name": asp["aspect_name"],
+                        "aspect": asp["aspect_name"],
+                        "orb": asp["orb"],
+                    })
+        return aspects
 
     def render_synastry(
         self,
@@ -524,19 +564,28 @@ class WheelRenderer:
         lookup_a: Dict[str, float],
         lookup_b: Dict[str, float],
         ascendant: float,
+        r_a: float | None = None,
+        r_b: float | None = None,
     ) -> List[str]:
+        """Draw cross-aspects: body A on inner ring, body B on outer ring.
+
+        r_a / r_b override the endpoint radii (used by the transit wheel to
+        draw transit-natal lines between the two rings).
+        """
         parts: List[str] = []
+        ra = self.R_aspect - 20 if r_a is None else r_a
+        rb = self.R_aspect + 20 if r_b is None else r_b
         for asp in cross_aspects:
-            a_name = asp.get("body_a") or asp.get("natal_body")
-            b_name = asp.get("body_b") or asp.get("transit_body")
+            a_name = asp.get("body_a") or asp.get("transit_body")
+            b_name = asp.get("body_b") or asp.get("natal_body")
             lon_a = lookup_a.get(str(a_name))
             lon_b = lookup_b.get(str(b_name))
             if lon_a is None or lon_b is None:
                 continue
             ang_a = _display_angle(lon_a, ascendant)
             ang_b = _display_angle(lon_b, ascendant)
-            x1, y1 = _polar(self.cx, self.cy, self.R_aspect - 20, ang_a)
-            x2, y2 = _polar(self.cx, self.cy, self.R_aspect + 20, ang_b)
+            x1, y1 = _polar(self.cx, self.cy, ra, ang_a)
+            x2, y2 = _polar(self.cx, self.cy, rb, ang_b)
             color = _aspect_color(asp)
             orb = _aspect_orb(asp)
             if orb is None:
