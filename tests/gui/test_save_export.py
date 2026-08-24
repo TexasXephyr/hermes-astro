@@ -267,6 +267,31 @@ def _routing_fires():
         assert "by_planet_" in fired[-1][0] and fired[-1][0].endswith(".csv")
         cols3, rows3 = fired[-1][3]
         assert cols3 == BY_PLANET_CSV_COLUMNS
+
+        # Calendar -> calendar_<person>_<start>_<end>.ics
+        w._calendar_data = {"events": [{"date": "2026-09-01", "transiting_body": "Saturn"}],
+                            "start": "2026-08-24", "end": "2026-09-23"}
+        w.notebook.set_current_page(w.PAGE_CALENDAR)
+        w._export_current()
+        assert "calendar_" in fired[-1][0] and fired[-1][0].endswith(".ics")
+
+        # Cookbook -> synthesis_<person>_<mode>.txt (latest done report)
+        import astro_gui.synthesis_store as sstore
+        real = sstore.latest_synthesis
+        try:
+            sstore.latest_synthesis = lambda chart_id, mode, db_path=None: {
+                "id": 7, "status": "done", "label": "Beetle",
+                "report": "The chart shows a personality oriented toward achievement.",
+            }
+            w.notebook.set_current_page(w.PAGE_COOKBOOK)
+            w._export_current()
+            assert "synthesis_" in fired[-1][0] and fired[-1][0].endswith(".txt")
+            name4, specs4, cb4, payload4 = fired[-1]
+            assert specs4[0][2] == "*.txt", f"filter: {specs4!r}"
+            assert cb4 == w._on_txt_dialog_result
+            assert payload4 == ("The chart shows a personality oriented toward achievement.",)
+        finally:
+            sstore.latest_synthesis = real
     finally:
         w.close()
 
@@ -305,6 +330,21 @@ def _empty_guards():
         w._transit_grid_data = {"active": []}
         w._export_current()
         assert fired == [], "empty transit grid must not open a dialog"
+        # Cookbook with no synthesis for the chart+mode
+        w.notebook.set_current_page(w.PAGE_COOKBOOK)
+        import astro_gui.synthesis_store as sstore
+        real = sstore.latest_synthesis
+        try:
+            sstore.latest_synthesis = lambda chart_id, mode, db_path=None: None
+            w._export_current()
+            assert fired == [], "cookbook with no synthesis must not open a dialog"
+            # Pending (not done) must not fire either
+            sstore.latest_synthesis = lambda chart_id, mode, db_path=None: {
+                "id": 1, "status": "pending", "report": None}
+            w._export_current()
+            assert fired == [], "pending synthesis must not open a dialog"
+        finally:
+            sstore.latest_synthesis = real
     finally:
         w.close()
 

@@ -1448,6 +1448,25 @@ class MainWindow(Gtk.ApplicationWindow):
             default = f"calendar_{_safe_name(self._person_name())}_{data.get('start')}_{data.get('end')}.ics"
             self._pick_save_path(default, [("iCalendar", "text/calendar", "*.ics")],
                                  self._on_ics_dialog_result, data.get("events"))
+        elif page == self.PAGE_COOKBOOK:
+            person = self._selected_person
+            if person is None or not person.get("chart_id"):
+                self._status_bar.set_info("Nothing to export — select a person first")
+                return
+            mode = self._cookbook_mode.get_selected_item().get_string()
+            from astro_gui.synthesis_store import latest_synthesis
+            row = latest_synthesis(person["chart_id"], mode)
+            if row is None:
+                self._status_bar.set_info("Nothing to export — no synthesis for this chart+mode yet")
+                return
+            if row["status"] != "done" or not row.get("report"):
+                self._status_bar.set_info(
+                    f"Synthesis #{row['id']} is {row['status']} — only completed reports export"
+                )
+                return
+            default = f"synthesis_{_safe_name(self._person_name())}_{_safe_name(mode)}.txt"
+            self._pick_save_path(default, [("Text", "text/plain", "*.txt")],
+                                 self._on_txt_dialog_result, row["report"])
         else:
             self._status_bar.set_info("Nothing to export on this tab")
 
@@ -1557,6 +1576,16 @@ class MainWindow(Gtk.ApplicationWindow):
             self._status_bar.set_info(f"ICS export failed: {path} is empty or missing")
             return
         self._status_bar.set_info(f"Exported ICS: {path}")
+
+    def _on_txt_dialog_result(self, path, payload):
+        import os
+        report = payload[0] if isinstance(payload, tuple) else payload
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(report)
+        if not (os.path.exists(path) and os.path.getsize(path) > 0):
+            self._status_bar.set_info(f"Text export failed: {path} is empty or missing")
+            return
+        self._status_bar.set_info(f"Exported synthesis: {path}")
 
     # ------------------------------------------------------------------
     # Public accessors
