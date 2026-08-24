@@ -85,7 +85,13 @@ class TestYamlLoader:
     def test_scoring_weights_numeric(self):
         scoring = yaml_loader("scoring")
         for key, value in scoring.items():
-            assert isinstance(value, (int, float)), f"{key} is not numeric"
+            if key == "aspect_weights":
+                # Nested dict of aspect-type weights; each entry numeric.
+                assert isinstance(value, dict)
+                for aspect, weight in value.items():
+                    assert isinstance(weight, (int, float)), f"{aspect} is not numeric"
+            else:
+                assert isinstance(value, (int, float)), f"{key} is not numeric"
 
     def test_yaml_loader_uses_safe_load_only(self):
         # Patch the unsafe loader to fail if called.

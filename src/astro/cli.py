@@ -21,11 +21,13 @@ from pathlib import Path
 from zoneinfo import available_timezones
 
 from astro_api_client import AstroClient
+from astro_analyze.scoring import planet_relative_values
 from astro_data.bodies import ALL_POINTS
 from astro_display import WheelRenderer
 from astro_hours.core import planetary_hours_for_date
 from astro_text.format import format_longitude
 from astro_text.luminaries import moon_phase
+from astro_text.symbols import symbol_for_body, symbol_for_aspect
 
 DEFAULT_TIME = "12:00:00"
 
@@ -325,6 +327,65 @@ def _cmd_table(client: AstroClient, args: argparse.Namespace) -> None:
     _write_output(_format_table(chart), _validate_output_path(args.output))
 
 
+def _cmd_grid(client: AstroClient, args: argparse.Namespace) -> None:
+    """Render a sortable transit grid: active transits ranked by priority.
+
+    Default view: one row per active transit, sorted by relative value
+    (priority). With --by-planet: one row per transiting body, aggregated
+    total priority. With --json: emit the raw scored data.
+
+    --date is the natal birth date when computing a fresh chart;
+    --transit-date is the sky date to score (defaults to today).
+    """
+    chart_id = args.chart_id
+    if not chart_id:
+        natal = _load_chart(client, args)
+        chart_id = natal["chart_id"]
+    transit_date = args.transit_date
+    if not transit_date:
+        transit_date = datetime.now().strftime("%Y-%m-%d")
+    _parse_datetime(transit_date, args.time)
+
+    natal = client.get_chart(chart_id)
+    transit = client.transit(chart_id, transit_date, args.time)
+    impact = client.period_impact(chart_id, transit_date, orb_days=args.orb_days)
+    active = impact.get("impact", {}).get("active_transits", [])
+
+    if args.by_planet:
+        rows = planet_relative_values(active, natal, transit)
+        if args.json:
+            _write_output(json.dumps(rows, indent=2), _validate_output_path(args.output))
+            return
+        lines = ["Transit Grid — by planet (relative value)", "=" * 72]
+        lines.append(f"{'Body':<10}{'Total':<8}{'Count':<7}{'Top Aspect':<14}{'vs Natal':<12}")
+        for r in rows:
+            lines.append(
+                f"{r['body']:<10}{r['total_priority']:<8}{r['transit_count']:<7}"
+                f"{r['top_aspect']:<14}{r['top_natal_body']:<12}"
+            )
+        _write_output("\n".join(lines), _validate_output_path(args.output))
+        return
+
+    if args.json:
+        _write_output(json.dumps(active, indent=2), _validate_output_path(args.output))
+        return
+
+    lines = [f"Transit Grid — {transit_date} {args.time} (sorted by relative value)", "=" * 78]
+    lines.append(f"{'Body':<10}{'Aspect':<13}{'Natal':<10}{'Orb':<8}{'Days':<6}{'Priority':<9}")
+    for t in active:
+        tb = t.get("transiting_body", "?")
+        nb = t.get("natal_body", "?")
+        aspect = t.get("aspect", "?")
+        tb_sym = symbol_for_body(tb) or tb
+        nb_sym = symbol_for_body(nb) or nb
+        asp_sym = symbol_for_aspect(aspect) or aspect
+        lines.append(
+            f"{tb_sym + ' ' + tb:<10}{asp_sym + ' ' + aspect:<13}{nb_sym + ' ' + nb:<10}"
+            f"{t.get('orb', 0):<8.2f}{t.get('days_to_exact', 0):<6}{t.get('priority', 0):<9}"
+        )
+    _write_output("\n".join(lines), _validate_output_path(args.output))
+
+
 def _cmd_bodies(client: AstroClient, args: argparse.Namespace) -> None:
     _write_output(json.dumps(ALL_POINTS, indent=2), _validate_output_path(args.output))
 
@@ -398,6 +459,17 @@ def _build_parser() -> argparse.ArgumentParser:
     table_p = subparsers.add_parser("table", parents=[shared], help="print a text table for a chart")
     table_p.add_argument("--chart-id", default=None, help="existing chart id")
     table_p.set_defaults(func=_cmd_table)
+
+    # grid
+    grid_p = subparsers.add_parser(
+        "grid", parents=[shared],
+        help="transit grid sorted by relative value (priority)",
+    )
+    grid_p.add_argument("--chart-id", default=None, help="existing natal chart id")
+    grid_p.add_argument("--transit-date", default=None, help="sky date to score (YYYY-MM-DD, default today)")
+    grid_p.add_argument("--orb-days", type=int, default=7, help="search window in days")
+    grid_p.add_argument("--by-planet", action="store_true", help="aggregate per transiting planet")
+    grid_p.set_defaults(func=_cmd_grid)
 
     # bodies
     bodies_p = subparsers.add_parser("bodies", help="list available celestial bodies")

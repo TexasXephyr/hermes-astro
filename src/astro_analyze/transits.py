@@ -10,7 +10,13 @@ from astro_api.astro_ctypes import (
     ac_detect_aspect,
     body_id_from_name,
     orb_preset_from_name,
+    calculate_aspects,
     AC_ASP_NONE,
+)
+from astro_analyze.scoring import (
+    aspect_priority,
+    compute_planetary_grid_weights,
+    MAJOR_ASPECTS,
 )
 
 # ------------------------------------------------------------------
@@ -253,7 +259,42 @@ def period_impact(natal_chart: dict,
                 "in_effect": True,
             })
 
+    # Attach composite priority scores (relative value) and sort descending.
+    # Uses the transit chart's own bodies for sign lookup and grid weights.
+    transit_chart = {
+        "bodies": target_bodies,
+        "aspects": [
+            {
+                "body_a": a["body_a"],
+                "body_b": a["body_b"],
+                "aspect_name": a["aspect_name"],
+                "orb": a["orb"],
+            }
+            for a in calculate_aspects(target_bodies, preset)
+        ],
+    }
+    natal_signs = {b["name"]: b.get("sign_name", "") for b in natal_bodies}
+    transit_signs = {b["name"]: b.get("sign_name", "") for b in target_bodies}
+    grid_weights = compute_planetary_grid_weights(transit_chart)
+
+    scored = []
+    for t in active:
+        aspect = t["aspect"]
+        if aspect not in MAJOR_ASPECTS:
+            continue
+        priority = aspect_priority(
+            t["transiting_body"], transit_signs.get(t["transiting_body"], ""),
+            t["natal_body"], natal_signs.get(t["natal_body"], ""),
+            t["orb"], t["days_to_exact"], aspect,
+            grid_weight=grid_weights.get(t["transiting_body"], 1.0),
+        )
+        item = dict(t)
+        item["priority"] = priority
+        scored.append(item)
+
+    scored.sort(key=lambda x: (-x.get("priority", 0), x.get("orb", 999)))
+
     return {
         "date": date,
-        "active_transits": active,
+        "active_transits": scored,
     }

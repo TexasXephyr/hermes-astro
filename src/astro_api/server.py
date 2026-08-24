@@ -44,6 +44,7 @@ from astro_api.astro_ctypes import (
 )
 from astro_data import db
 from astro_analyze.transits import find_transit_events, period_impact
+from astro_analyze.scoring import aspect_priority, compute_planetary_grid_weights, MAJOR_ASPECTS
 from astro_analyze.analysis import analyze_chart
 from astro_analyze.synthesis import get_provider
 from astro_analyze.cookbook import enrich_chart, enrich_transit, enrich_synastry
@@ -507,6 +508,37 @@ class AstroHandler(BaseHTTPRequestHandler):
                             "orb": asp["orb"],
                             "applying": asp["applying"],
                         })
+
+            # Attach composite priority (relative value) to each cross aspect.
+            # days_to_exact is approximated from the applying flag: applying
+            # aspects are scored as approaching (days=+1), separating as past
+            # (days=-1); exact aspects get days=0.
+            natal_signs = {b["name"]: b.get("sign_name", "") for b in natal_bodies}
+            transit_signs = {b["name"]: b.get("sign_name", "") for b in transit_bodies}
+            grid_weights = compute_planetary_grid_weights({
+                "bodies": transit_bodies,
+                "aspects": [
+                    {
+                        "body_a": a["transit_body"],
+                        "body_b": a["natal_body"],
+                        "aspect_name": a["aspect_name"],
+                        "orb": a["orb"],
+                    }
+                    for a in cross_aspects
+                ],
+            })
+            for a in cross_aspects:
+                aspect_name = (a.get("aspect_name") or "").lower()
+                if aspect_name not in MAJOR_ASPECTS:
+                    continue
+                days = 0 if a.get("orb", 999) < 0.5 else (1 if a.get("applying") else -1)
+                a["priority"] = aspect_priority(
+                    a["transit_body"], transit_signs.get(a["transit_body"], ""),
+                    a["natal_body"], natal_signs.get(a["natal_body"], ""),
+                    a["orb"], days, aspect_name,
+                    grid_weight=grid_weights.get(a["transit_body"], 1.0),
+                )
+            cross_aspects.sort(key=lambda x: (-x.get("priority", 0), x.get("orb", 999)))
 
             response = {
                 "status": "ok",

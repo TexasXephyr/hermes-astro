@@ -17,3 +17,33 @@ in_own_sign: 2
 in_mutual_reception: 3
 
 peregrine: 0
+
+# ---------------------------------------------------------------------------
+# Transit aspect priority scoring (composite "relative value" of a transit)
+# Mirrors the proven morning_brief_producer.aspect_priority formula.
+# ---------------------------------------------------------------------------
+
+# Base weight per major aspect type (higher = more significant)
+aspect_weights:
+  conjunction: 36
+  opposition: 30
+  trine: 24
+  square: 18
+  sextile: 12
+  quincunx: 10
+
+# Orb decay curve: direction_multiplier = 2.0 * exp(a*orb + b*orb^2)
+orb_decay_a: 0.347
+orb_decay_b: -0.15
+
+# Planetary grid weight: grid_weight = 1.0 + grid_scale * sqrt(raw_sum)
+grid_scale: 0.1
+
+# Bonus terms added to contact relevance
+rulership_bonus: 20
+luminary_bonus: 10
+applying_bonus: 15
+
+# Distance-to-exact tempering: priority = contact / (1 + a*|days| + b*days^2)
+distance_linear: 0.2
+distance_quadratic: 0.15

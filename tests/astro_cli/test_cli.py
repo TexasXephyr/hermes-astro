@@ -101,6 +101,57 @@ class TestAstroCli:
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip().startswith("<svg")
 
+    def test_cli_grid_sorted_by_priority(self):
+        """grid computes a natal chart on the fly and ranks transits."""
+        result = self._run(
+            "grid",
+            "--name", "T",
+            "--date", "2000-01-01",
+            "--time", "12:00:00",
+            "--timezone", "UTC",
+            "--latitude", "0",
+            "--longitude", "0",
+            "--transit-date", "2026-08-23",
+        )
+        assert result.returncode == 0, result.stderr
+        assert "Transit Grid" in result.stdout
+        assert "Priority" in result.stdout
+
+    def test_cli_grid_json_has_priority(self):
+        result = self._run(
+            "grid",
+            "--name", "T",
+            "--date", "2000-01-01",
+            "--time", "12:00:00",
+            "--timezone", "UTC",
+            "--latitude", "0",
+            "--longitude", "0",
+            "--transit-date", "2026-08-23",
+            "--json",
+        )
+        assert result.returncode == 0, result.stderr
+        data = json.loads(result.stdout)
+        assert isinstance(data, list)
+        if data:
+            assert "priority" in data[0]
+            priorities = [t["priority"] for t in data]
+            assert priorities == sorted(priorities, reverse=True)
+
+    def test_cli_grid_by_planet(self):
+        result = self._run(
+            "grid",
+            "--name", "T",
+            "--date", "2000-01-01",
+            "--time", "12:00:00",
+            "--timezone", "UTC",
+            "--latitude", "0",
+            "--longitude", "0",
+            "--transit-date", "2026-08-23",
+            "--by-planet",
+        )
+        assert result.returncode == 0, result.stderr
+        assert "by planet" in result.stdout
+
     def test_cli_table(self):
         result = self._run(
             "table",

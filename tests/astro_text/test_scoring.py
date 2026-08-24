@@ -32,4 +32,9 @@ class TestScoring:
     def test_score_weights_are_numeric(self):
         weights = yaml_loader("scoring")
         for key, value in weights.items():
-            assert isinstance(value, (int, float)), f"{key} not numeric"
+            if key == "aspect_weights":
+                assert isinstance(value, dict)
+                for aspect, weight in value.items():
+                    assert isinstance(weight, (int, float)), f"{aspect} not numeric"
+            else:
+                assert isinstance(value, (int, float)), f"{key} not numeric"
