@@ -5,6 +5,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GObject
 
 from astro_gui.api_client import AstroApiClient
+from astro_gui.widgets.person_dialog import PersonDialog
 
 
 # Family quick-access pin IDs
@@ -97,16 +98,29 @@ class PersonSelector(Gtk.Box):
             self.emit("person-changed", self._people[idx])
 
     def _on_new_clicked(self, btn):
-        # Placeholder: open a dialog in a later sprint
-        dialog = Gtk.MessageDialog(
-            transient_for=self.get_root(),
-            modal=True,
-            buttons=Gtk.ButtonsType.OK,
-            message_type=Gtk.MessageType.INFO,
-            text="New Person dialog is not yet implemented.",
+        dialog = PersonDialog(
+            parent=self.get_root(),
+            title="New Person",
+            person=None,
+            chart=None,
         )
-        dialog.connect("response", lambda d, r: d.destroy())
         dialog.present()
+        dialog.connect("response", self._on_new_response)
+
+    def _on_new_response(self, dialog, response_id):
+        if response_id != Gtk.ResponseType.OK:
+            dialog.destroy()
+            return
+        values = dialog.get_values()
+        dialog.destroy()
+        if values is None:
+            return
+        try:
+            self._save_person(values)
+        except Exception as exc:
+            self._show_error(f"Could not create person: {exc}")
+            return
+        self.refresh()
 
     def _on_edit_clicked(self, btn):
         person = self.get_selected_person()
@@ -121,13 +135,79 @@ class PersonSelector(Gtk.Box):
             dialog.connect("response", lambda d, r: d.destroy())
             dialog.present()
             return
-        # Placeholder: open an edit dialog in a later sprint
+        chart = self._get_person_chart(person)
+        dialog = PersonDialog(
+            parent=self.get_root(),
+            title=f"Edit {person.get('name', '???')}",
+            person=person,
+            chart=chart,
+        )
+        dialog.present()
+        dialog.connect("response", self._on_edit_response)
+
+    def _on_edit_response(self, dialog, response_id):
+        if response_id != Gtk.ResponseType.OK:
+            dialog.destroy()
+            return
+        values = dialog.get_values()
+        dialog.destroy()
+        if values is None:
+            return
+        try:
+            self._save_person(values)
+        except Exception as exc:
+            self._show_error(f"Could not update person: {exc}")
+            return
+        self.refresh()
+
+    def _save_person(self, values):
+        """Compute a natal chart and upsert the person in the store.
+
+        Library AstroClient: natal(...) -> chart dict with chart_id, then
+        create_person(name, chart_id) upserts by name. Legacy HTTP
+        AstroApiClient: calculate_natal(...) then create_person(birth data).
+        """
+        client = self._client
+        if hasattr(client, "natal"):
+            chart = client.natal(
+                name=values["name"],
+                date=values["date"],
+                time=values["time"],
+                timezone=values["timezone"],
+                latitude=values["latitude"],
+                longitude=values["longitude"],
+            )
+            client.create_person(values["name"], chart["chart_id"])
+            return
+        # Legacy HTTP client path
+        person_data = {
+            "name": values["name"],
+            "birth_date": values["date"],
+            "birth_time": values["time"],
+            "timezone": values["timezone"],
+            "latitude": values["latitude"],
+            "longitude": values["longitude"],
+        }
+        client.calculate_natal(person_data, options={"house_system": "K", "orb_preset": "Modern"})
+        client.create_person(person_data)
+
+    def _get_person_chart(self, person):
+        """Return the stored natal chart for a person, or None."""
+        chart_id = person.get("chart_id")
+        if not chart_id:
+            return None
+        try:
+            return self._client.get_chart(chart_id)
+        except Exception:
+            return None
+
+    def _show_error(self, message):
         dialog = Gtk.MessageDialog(
             transient_for=self.get_root(),
             modal=True,
             buttons=Gtk.ButtonsType.OK,
-            message_type=Gtk.MessageType.INFO,
-            text=f"Edit dialog for {person.get('name', '???')} is not yet implemented.",
+            message_type=Gtk.MessageType.ERROR,
+            text=message,
         )
         dialog.connect("response", lambda d, r: d.destroy())
         dialog.present()
