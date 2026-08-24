@@ -7,13 +7,15 @@ Builds Gtk.ColumnView tables (GTK4's modern sortable list) for:
     sign / house)
   - By-planet aggregation: Body, Total, Count, Top Aspect, vs Natal
 
-All views are backed by a Gtk.SortListModel. Column headers are explicit
-Gtk.Buttons (installed through the view's header factory) wired to the
-sort model: clicking a header sorts the model, re-clicking inverts the
-direction, and the button label shows the active direction with a
-▲/▼ prefix. GTK's built-in ColumnView header sorting is NOT used — on
-GTK 4.22 it drives an internal sorter that never reorders the model the
-views consume. The transit grid consumes the
+All views are backed by a Gtk.SortListModel. Sort controls are a row of
+explicit Gtk.Buttons rendered ABOVE the view (one per column title):
+clicking a button sorts the model, re-clicking inverts the direction,
+and the active button's label shows the direction with a ▲/▼ prefix.
+GTK's built-in ColumnView header sorting is NOT used — on GTK 4.22 the
+header row cannot host custom widgets (a header factory's setup/bind
+callbacks fire but the native GtkColumnViewTitle widgets still render,
+so custom buttons never appear) and Gtk.ColumnView exposes no sort
+signal to hook. The transit grid consumes the
 priority-scored output from astro_analyze.scoring (via
 AstroClient.period_impact) and looks up transit/natal signs from the
 body lists passed in by the caller.
@@ -299,54 +301,15 @@ def _set_sorter_direction(sorter: Gtk.Sorter, descending: bool):
 
 
 def _header_button(label: str) -> Gtk.Button:
-    """A header button; its label shows the sort direction when active."""
+    """A sort button; its label shows the sort direction when active."""
     btn = Gtk.Button()
     btn.set_label(label)
     btn.set_focusable(False)
     return btn
 
 
-def _header_factory(buttons: dict) -> Gtk.SignalListItemFactory:
-    """Factory that renders the explicit header buttons in each column.
-
-    The ColumnView header factory is called once per column with a
-    ListItem whose item is the Gtk.ColumnViewColumn. The matching
-    button (by column title) is stashed on the column object as
-    ``col._sort_button``; `_install_header_factory` copies it into the
-    buttons dict so tests can drive clicks directly.
-    """
-    factory = Gtk.SignalListItemFactory()
-    factory.connect("setup", _header_setup)
-    factory.connect("bind", _header_bind, buttons)
-    return factory
-
-
-def _header_setup(factory, list_item):
-    box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-    box.set_halign(Gtk.Align.START)
-    box.set_spacing(4)
-    list_item.set_child(box)
-
-
-def _header_bind(factory, list_item, buttons: dict):
-    col = list_item.get_item()
-    if not isinstance(col, Gtk.ColumnViewColumn):
-        return
-    btn = getattr(col, "_sort_button", None)
-    if btn is None:
-        return
-    box = list_item.get_child()
-    # Remove any previously-attached child (bind can fire more than once).
-    child = box.get_first_child()
-    while child is not None:
-        nxt = child.get_next_sibling()
-        box.remove(child)
-        child = nxt
-    box.append(btn)
-
-
 def _mark_active(buttons: dict, title: str | None, descending: bool):
-    """Update the header button labels to show the active sort direction."""
+    """Update the sort button labels to show the active sort direction."""
     for t, btn in buttons.items():
         base = t
         if getattr(btn, "_base_title", None):
@@ -365,29 +328,37 @@ def _sorter_desc(sorter: Gtk.Sorter) -> bool:
     return bool(state and state["desc"])
 
 
-def _install_header_buttons(view: Gtk.ColumnView,
-                            sort_model: Gtk.SortListModel,
-                            buttons: dict,
-                            sorter_specs: dict,
-                            default_title: str | None = None):
-    """Wire explicit header buttons that sort the view's SortListModel.
+def _install_sort_buttons(view: Gtk.ColumnView,
+                          sort_model: Gtk.SortListModel,
+                          buttons: dict,
+                          sorter_specs: dict,
+                          default_title: str | None = None) -> Gtk.Widget:
+    """Build a visible row of sort buttons above the view.
+
+    GTK 4.22's ColumnView header row cannot host custom widgets on this
+    build (a header factory's setup/bind callbacks fire but the native
+    GtkColumnViewTitle widgets still render — the custom buttons never
+    appear), and Gtk.ColumnView exposes no sort signal to hook. So the
+    sort controls live in a plain FlowBox row rendered *above* the view,
+    one small button per column title, wired directly to the
+    SortListModel.
 
     ``buttons`` maps column title -> Gtk.Button (built by the caller with
     `_header_button`). ``sorter_specs`` maps column title -> sorter object
     with the column's preferred direction baked in.
 
-    Clicking a header button:
+    Clicking a sort button:
     - first click on a column activates it with its sorter's baked-in
       direction (ascending for text, descending for numeric/priority);
     - re-click on the active column inverts the direction;
     - the active button's label gets a '▲ '/'▼ ' prefix; the sort model
       is re-sorted through ``sort_model.set_sorter`` so the visible row
-      order changes immediately (GTK's built-in header sorting is NOT
-      used — on GTK 4.22 it drives an internal sorter that never
-      reorders the model).
+      order changes immediately.
 
     The default sort is applied by the caller (default_title + active
-    direction), so the initial header shows the marker for it.
+    direction), so the initial button shows the marker for it. The
+    returned row is a Gtk.FlowBox (wraps when the window is narrow) and
+    is exposed as ``view._sort_row`` for tests.
     """
     active = {"title": default_title, "desc": False}
     if default_title is not None:
@@ -418,12 +389,17 @@ def _install_header_buttons(view: Gtk.ColumnView,
         if title in sorter_specs:
             btn.connect("clicked", _on_clicked, title)
 
-    for col in view.get_columns():
-        btn = buttons.get(col.get_title())
-        if btn is not None:
-            col._sort_button = btn
-
-    view.set_header_factory(_header_factory(buttons))
+    row = Gtk.FlowBox()
+    row.set_selection_mode(Gtk.SelectionMode.NONE)
+    row.set_column_spacing(4)
+    row.set_row_spacing(2)
+    row.set_margin_top(4)
+    row.set_margin_start(6)
+    row.set_margin_end(6)
+    for title in sorter_specs:
+        row.append(buttons[title])
+    view._sort_row = row
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -433,9 +409,12 @@ def _install_header_buttons(view: Gtk.ColumnView,
 def build_planet_table(chart: dict) -> Gtk.Widget:
     """Natal planet table: Body, Sign, Degree, House, Dignity, Speed, Retro.
 
-    Column headers are explicit Gtk.Buttons wired to the SortListModel —
-    clicking a header sorts, re-clicking inverts, and the active column's
-    label carries a '▲ '/'▼ ' prefix (default sort: degree ascending).
+    Returns a vertical Box: a row of sort buttons above the ColumnView.
+    Clicking a sort button sorts, re-clicking inverts, and the active
+    button's label carries a '▲ '/'▼ ' prefix (default sort: degree
+    ascending). The sort buttons live in a visible row above the view
+    because GTK 4.22's ColumnView header row cannot host custom widgets
+    on this build (see `_install_sort_buttons`).
     """
     rows = []
     for b in sorted(chart.get("bodies", []), key=lambda x: x.get("longitude", 0.0)):
@@ -493,14 +472,19 @@ def build_planet_table(chart: dict) -> Gtk.Widget:
     # Default sort: by degree (longitude)
     sort_model.set_sorter(sorter_specs["Degree"])
 
-    # Explicit header buttons (GTK 4.22's built-in header sorting drives an
-    # internal sorter that never reorders this model — see module docstring).
+    # Visible sort buttons (GTK 4.22's header row cannot host custom
+    # widgets — see module docstring / _install_sort_buttons).
     buttons = {title: _header_button(title) for title in sorter_specs}
-    _install_header_buttons(view, sort_model, buttons, sorter_specs,
-                            default_title="Degree")
+    sort_row = _install_sort_buttons(view, sort_model, buttons, sorter_specs,
+                                     default_title="Degree")
     view._sort_model = sort_model
     view._sort_buttons = buttons
-    return view
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    box.append(sort_row)
+    box.append(view)
+    view.set_vexpand(True)
+    return box
 
 
 # ---------------------------------------------------------------------------
@@ -825,10 +809,12 @@ def build_transit_grid(active_transits: list[dict],
 
     `active_transits` is the priority-scored list from
     astro_analyze.scoring.score_active_transits (already sorted desc by
-    priority). Column headers are explicit Gtk.Buttons wired to the
-    SortListModel — clicking a header sorts, re-clicking inverts, and the
-    active column's label carries a '▲ '/'▼ ' prefix (default sort:
-    priority descending).
+    priority). A row of sort buttons sits above the ColumnView — clicking
+    a sort button sorts, re-clicking inverts, and the active button's
+    label carries a '▲ '/'▼ ' prefix (default sort: priority descending).
+    The sort buttons live in a visible row above the view because GTK
+    4.22's ColumnView header row cannot host custom widgets on this build
+    (see `_install_sort_buttons`).
 
     `transit_bodies` / `natal_bodies` are the body lists from the transit
     and natal charts; they provide the sign (and longitude / natal house)
@@ -972,11 +958,11 @@ def build_transit_grid(active_transits: list[dict],
     # Default sort: priority descending
     sort_model.set_sorter(sorter_specs["Priority"])
 
-    # Explicit header buttons (GTK 4.22's built-in header sorting drives an
-    # internal sorter that never reorders this model — see module docstring).
+    # Visible sort buttons (GTK 4.22's header row cannot host custom
+    # widgets — see module docstring / _install_sort_buttons).
     buttons = {title: _header_button(title) for title in sorter_specs}
-    _install_header_buttons(view, sort_model, buttons, sorter_specs,
-                            default_title="Priority")
+    sort_row = _install_sort_buttons(view, sort_model, buttons, sorter_specs,
+                                     default_title="Priority")
     view._sort_model = sort_model
     view._sort_buttons = buttons
 
@@ -994,6 +980,7 @@ def build_transit_grid(active_transits: list[dict],
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
     box.filter_row = _build_transit_filter_row(state, active_points)
     box.append(box.filter_row)
+    box.append(sort_row)
     box.append(view)
     view.set_vexpand(True)
     return box
@@ -1002,9 +989,12 @@ def build_transit_grid(active_transits: list[dict],
 def build_planet_agg_table(rows: list[dict]) -> Gtk.Widget:
     """By-planet aggregation: Body, Total, Count, Top Aspect, vs Natal.
 
-    Column headers are explicit Gtk.Buttons wired to the SortListModel —
-    clicking a header sorts, re-clicking inverts, and the active column's
-    label carries a '▲ '/'▼ ' prefix (default sort: total descending).
+    Returns a vertical Box: a row of sort buttons above the ColumnView.
+    Clicking a sort button sorts, re-clicking inverts, and the active
+    button's label carries a '▲ '/'▼ ' prefix (default sort: total
+    descending). The sort buttons live in a visible row above the view
+    because GTK 4.22's ColumnView header row cannot host custom widgets
+    on this build (see `_install_sort_buttons`).
     """
     agg_rows = []
     for r in rows:
@@ -1042,11 +1032,16 @@ def build_planet_agg_table(rows: list[dict]) -> Gtk.Widget:
     # Default sort: total descending
     sort_model.set_sorter(sorter_specs["Total"])
 
-    # Explicit header buttons (GTK 4.22's built-in header sorting drives an
-    # internal sorter that never reorders this model — see module docstring).
+    # Visible sort buttons (GTK 4.22's header row cannot host custom
+    # widgets — see module docstring / _install_sort_buttons).
     buttons = {title: _header_button(title) for title in sorter_specs}
-    _install_header_buttons(view, sort_model, buttons, sorter_specs,
-                            default_title="Total")
+    sort_row = _install_sort_buttons(view, sort_model, buttons, sorter_specs,
+                                     default_title="Total")
     view._sort_model = sort_model
     view._sort_buttons = buttons
-    return view
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    box.append(sort_row)
+    box.append(view)
+    view.set_vexpand(True)
+    return box

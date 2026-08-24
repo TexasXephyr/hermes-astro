@@ -5,7 +5,7 @@ sys.path.insert(0, "/home/xephyr/astro/src")
 
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk
+from gi.repository import Gtk, GLib
 
 from astro_gui.renderers.table_renderer import (
     build_planet_table,
@@ -29,6 +29,60 @@ def check(label, expr):
         failed += 1
 
 
+def _find_column_view(widget):
+    """Find the ColumnView inside a builder's returned widget tree."""
+    if isinstance(widget, Gtk.ColumnView):
+        return widget
+    if isinstance(widget, Gtk.Box):
+        for child in widget:
+            found = _find_column_view(child)
+            if found is not None:
+                return found
+    return None
+
+
+def _realize(widget):
+    """Realize a widget inside a window and pump the main loop.
+
+    Returns the window. The widget tree is fully realized so tests can
+    assert on the widgets that actually render (the item-35 bug was
+    header buttons that never appeared in the realized tree).
+    """
+    win = Gtk.Window()
+    sw = Gtk.ScrolledWindow()
+    sw.set_child(widget)
+    win.set_child(sw)
+    win.present()
+    for _ in range(30):
+        while GLib.MainContext.default().iteration(False):
+            pass
+    return win
+
+
+def _walk(widget):
+    """Yield a widget and all descendants (for realized-tree assertions)."""
+    yield widget
+    if isinstance(widget, Gtk.Box):
+        for child in widget:
+            yield from _walk(child)
+    elif isinstance(widget, Gtk.ScrolledWindow):
+        yield from _walk(widget.get_child())
+    elif isinstance(widget, Gtk.Viewport):
+        yield from _walk(widget.get_child())
+    elif isinstance(widget, Gtk.Window):
+        yield from _walk(widget.get_child())
+    elif isinstance(widget, Gtk.FlowBox):
+        for child in widget:
+            yield from _walk(child)
+    elif isinstance(widget, Gtk.FlowBoxChild):
+        yield from _walk(widget.get_child())
+    elif isinstance(widget, Gtk.ColumnView):
+        child = widget.get_first_child()
+        while child is not None:
+            yield from _walk(child)
+            child = child.get_next_sibling()
+
+
 # 1. Natal planet table
 chart = {
     "bodies": [
@@ -38,12 +92,12 @@ chart = {
          "sign_degree": 3.5, "house": 2, "speed": 12.1, "retrograde": False},
     ]
 }
-check("build_planet_table returns ColumnView",
-      lambda: isinstance(build_planet_table(chart), Gtk.ColumnView))
+check("build_planet_table returns Box with sort row + ColumnView",
+      lambda: isinstance(build_planet_table(chart), Gtk.Box))
 
 # 1b. Dignity column is populated (review item 19)
 def _dignity_populated():
-    view = build_planet_table(chart)
+    view = _find_column_view(build_planet_table(chart))
     model = view.get_model()
     assert model is not None
     # Walk the sort model -> selection -> rows
@@ -84,14 +138,12 @@ natal_houses = [{"house_num": i + 1, "longitude": i * 30.0} for i in range(12)]
 
 def _transit_grid_builds():
     widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
-    assert isinstance(widget, Gtk.Box), "transit grid should be a vertical Box (filter row + view)"
+    assert isinstance(widget, Gtk.Box), "transit grid should be a vertical Box (filter row + sort row + view)"
     # Find the ColumnView child
-    view = None
-    for child in widget:
-        if isinstance(child, Gtk.ColumnView):
-            view = child
+    view = _find_column_view(widget)
     assert view is not None, "transit grid box missing ColumnView"
     assert hasattr(widget, "filter_row"), "transit grid box missing filter_row"
+    assert hasattr(view, "_sort_row"), "transit grid view missing _sort_row"
 
 
 check("build_transit_grid returns Box with ColumnView + filter row", _transit_grid_builds)
@@ -99,7 +151,7 @@ check("build_transit_grid returns Box with ColumnView + filter row", _transit_gr
 
 def _transit_sign_columns():
     widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
-    view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
+    view = _find_column_view(widget)
     selection = view.get_model()
     n = selection.get_n_items()
     assert n == 2, f"expected 2 rows, got {n}"
@@ -120,7 +172,7 @@ check("transit grid sign columns populated from body lists", _transit_sign_colum
 
 def _transit_house_columns():
     widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
-    view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
+    view = _find_column_view(widget)
     selection = view.get_model()
     rows = [selection.get_item(i) for i in range(selection.get_n_items())]
     by_body = {r.body_name: r for r in rows}
@@ -133,7 +185,7 @@ def _transit_house_columns():
     assert by_body["Chiron"].n_house == "6", f"Chiron n_house: {by_body['Chiron'].n_house!r}"
     # House-less data degrades gracefully
     widget2 = build_transit_grid(transits)
-    view2 = next(c for c in widget2 if isinstance(c, Gtk.ColumnView))
+    view2 = _find_column_view(widget2)
     rows2 = [view2.get_model().get_item(i) for i in range(view2.get_model().get_n_items())]
     assert rows2[0].t_house == "", f"expected empty t_house without houses, got {rows2[0].t_house!r}"
     assert rows2[0].n_house == "", f"expected empty n_house without bodies, got {rows2[0].n_house!r}"
@@ -144,7 +196,7 @@ check("transit grid house columns (find_house crossing + natal body house)", _tr
 
 def _transit_glyph_columns():
     widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
-    view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
+    view = _find_column_view(widget)
     cols = view.get_columns()
     assert [c.get_title() for c in cols] == [
         "T Body", "T Sign", "T House", "Aspect", "N Body", "N Sign",
@@ -181,7 +233,7 @@ check("path-glyph parser + cairo rendering (LiberZodiac outlines)", _glyph_path_
 
 def _transit_days_format():
     widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
-    view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
+    view = _find_column_view(widget)
     selection = view.get_model()
     rows = [selection.get_item(i) for i in range(selection.get_n_items())]
     by_body = {r.body_name: r for r in rows}
@@ -213,7 +265,7 @@ check("format_days smart formatting", _fmt_days)
 # 2c. Filter mechanism (review item 24 + 25 + 30 + 31)
 def _filter_point():
     widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
-    view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
+    view = _find_column_view(widget)
     selection = view.get_model()
     fr = widget.filter_row
     # The point filter is a dropdown of ACTIVE points ('T: Mercury', ...).
@@ -236,7 +288,7 @@ check("filter by active point dropdown (T side)", _filter_point)
 
 def _filter_natal_point():
     widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
-    view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
+    view = _find_column_view(widget)
     selection = view.get_model()
     fr = widget.filter_row
     fr.point_side_dropdown.set_selected(1)  # natal
@@ -251,7 +303,7 @@ check("filter by active point dropdown (N side)", _filter_natal_point)
 
 def _filter_house():
     widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
-    view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
+    view = _find_column_view(widget)
     selection = view.get_model()
     fr = widget.filter_row
     # house dropdown: any, 1..12 (index 2 = "2")
@@ -278,7 +330,7 @@ check("filter by house (transit crossing + natal body)", _filter_house)
 
 def _filter_aspect():
     widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
-    view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
+    view = _find_column_view(widget)
     selection = view.get_model()
     fr = widget.filter_row
     # aspect dropdown: all, conjunction, opposition, trine, square, sextile, quincunx
@@ -299,7 +351,7 @@ check("filter by aspect type", _filter_aspect)
 
 def _filter_sign():
     widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
-    view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
+    view = _find_column_view(widget)
     selection = view.get_model()
     fr = widget.filter_row
     # sign dropdown: any, Aries..Pisces (index 1 = Aries)
@@ -323,29 +375,20 @@ check("filter by sign (transit + natal)", _filter_sign)
 # 2d. Sort toggle on re-click (review items 21 + 23)
 def _sort_toggle():
     widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
-    view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
-    cvs = view.get_sorter()
-    # Find the Days column by title (T Body, T Sign, T House, Aspect,
-    # N Body, N Sign, N House, Orb, Days, Priority).
-    days_col = next(c for c in view.get_columns() if c.get_title() == "Days")
-
-    def header_click():
-        # Mirrors gtk_column_view_header_button_clicked: re-clicking the
-        # active column toggles the sort order, otherwise ascending.
-        if cvs.get_n_sort_columns() > 0 and cvs.get_primary_sort_column() == days_col:
-            cur = cvs.get_primary_sort_order()
-            nxt = Gtk.SortType.DESCENDING if cur == Gtk.SortType.ASCENDING else Gtk.SortType.ASCENDING
-        else:
-            nxt = Gtk.SortType.ASCENDING
-        view.sort_by_column(days_col, nxt)
-
-    header_click()
-    assert cvs.get_primary_sort_order() == Gtk.SortType.ASCENDING
-    header_click()
-    assert cvs.get_primary_sort_order() == Gtk.SortType.DESCENDING, \
-        f"expected DESC after re-click, got {cvs.get_primary_sort_order()}"
-    header_click()
-    assert cvs.get_primary_sort_order() == Gtk.SortType.ASCENDING
+    view = _find_column_view(widget)
+    sm = view._sort_model
+    days = lambda: [sm.get_item(i).sort_days for i in range(sm.get_n_items())]
+    # Default sort: priority descending
+    assert [sm.get_item(i).sort_priority for i in range(sm.get_n_items())] == [128, 119]
+    # Click Days (not active): activates ascending.
+    view._sort_buttons["Days"].emit("clicked")
+    assert days() == [0, 1], f"expected days asc after click, got {days()}"
+    # Re-click inverts.
+    view._sort_buttons["Days"].emit("clicked")
+    assert days() == [1, 0], f"expected days desc after re-click, got {days()}"
+    # Re-click again inverts back.
+    view._sort_buttons["Days"].emit("clicked")
+    assert days() == [0, 1], f"expected days asc after third click, got {days()}"
 
 
 check("column header re-click inverts sort order", _sort_toggle)
@@ -358,25 +401,25 @@ agg = [
     {"body": "Chiron", "total_priority": 172, "transit_count": 4,
      "top_aspect": "trine", "top_natal_body": "Neptune"},
 ]
-check("build_planet_agg_table returns ColumnView",
-      lambda: isinstance(build_planet_agg_table(agg), Gtk.ColumnView))
+check("build_planet_agg_table returns Box with sort row + ColumnView",
+      lambda: isinstance(build_planet_agg_table(agg), Gtk.Box))
 
-# 3b. Header-button sorting (item 35: explicit Gtk.Button headers)
+# 3b. Sort-button sorting (item 35: visible sort buttons above the view)
 def _transit_priority_header_sort():
     widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
-    view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
+    view = _find_column_view(widget)
     buttons = getattr(view, "_sort_buttons", None)
     assert buttons is not None, "transit grid missing _sort_buttons"
     assert set(buttons) == {
         "T Body", "T Sign", "T House", "Aspect", "N Body", "N Sign",
         "N House", "Orb", "Days", "Priority",
-    }, f"header buttons wrong: {sorted(buttons)}"
+    }, f"sort buttons wrong: {sorted(buttons)}"
     sm = view._sort_model
     prio = lambda: [sm.get_item(i).sort_priority for i in range(sm.get_n_items())]
     # Default sort: priority descending
     assert prio() == [128, 119], f"expected default priority desc, got {prio()}"
     assert buttons["Priority"].get_label() == "▼ Priority", \
-        f"priority header should show active marker, got {buttons['Priority'].get_label()!r}"
+        f"priority button should show active marker, got {buttons['Priority'].get_label()!r}"
     # First click inverts (default was already priority desc)
     buttons["Priority"].emit("clicked")
     assert prio() == [119, 128], f"expected priority asc after click, got {prio()}"
@@ -389,13 +432,13 @@ def _transit_priority_header_sort():
         buttons["Priority"].get_label()
 
 
-check("transit grid: Priority header click re-sorts and re-click inverts",
+check("transit grid: Priority sort button click re-sorts and re-click inverts",
       _transit_priority_header_sort)
 
 
 def _transit_other_header_sort():
     widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
-    view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
+    view = _find_column_view(widget)
     buttons = view._sort_buttons
     sm = view._sort_model
     days = lambda: [sm.get_item(i).sort_days for i in range(sm.get_n_items())]
@@ -411,16 +454,16 @@ def _transit_other_header_sort():
     assert days() == [1, 0], f"expected days desc after re-click, got {days()}"
 
 
-check("transit grid: clicking a non-default header activates + inverts",
+check("transit grid: clicking a non-default sort button activates + inverts",
       _transit_other_header_sort)
 
 
 def _natal_degree_header_sort():
-    view = build_planet_table(chart)
+    view = _find_column_view(build_planet_table(chart))
     buttons = view._sort_buttons
     assert set(buttons) == {
         "Body", "Sign", "Degree", "House", "Dignity", "Speed", "Retro",
-    }, f"natal header buttons wrong: {sorted(buttons)}"
+    }, f"natal sort buttons wrong: {sorted(buttons)}"
     sm = view._sort_model
     deg = lambda: [round(sm.get_item(i).sort_degree, 1)
                    for i in range(sm.get_n_items())]
@@ -433,12 +476,12 @@ def _natal_degree_header_sort():
     assert deg() == [147.3, 248.7], f"expected degree asc after re-click, got {deg()}"
 
 
-check("natal table: Degree header click sorts + inverts",
+check("natal table: Degree sort button click sorts + inverts",
       _natal_degree_header_sort)
 
 
 def _planet_agg_header_sort():
-    view = build_planet_agg_table(agg)
+    view = _find_column_view(build_planet_agg_table(agg))
     buttons = view._sort_buttons
     sm = view._sort_model
     tot = lambda: [sm.get_item(i).sort_total for i in range(sm.get_n_items())]
@@ -450,12 +493,12 @@ def _planet_agg_header_sort():
     assert tot() == [197, 172], f"expected total desc after re-click, got {tot()}"
 
 
-check("by-planet: Total header click + invert",
+check("by-planet: Total sort button click + invert",
       _planet_agg_header_sort)
 
 
 def _planet_agg_count_header_sort():
-    view = build_planet_agg_table(agg)
+    view = _find_column_view(build_planet_agg_table(agg))
     buttons = view._sort_buttons
     sm = view._sort_model
     cnt = lambda: [sm.get_item(i).sort_count for i in range(sm.get_n_items())]
@@ -471,7 +514,7 @@ def _planet_agg_count_header_sort():
         buttons["Count"].get_label()
 
 
-check("by-planet: Count header sorts by its own field + inverts",
+check("by-planet: Count sort button sorts by its own field + inverts",
       _planet_agg_count_header_sort)
 
 # 4. Empty transit list still builds
@@ -480,7 +523,77 @@ check("build_transit_grid handles empty list",
 
 # 5. Empty chart still builds
 check("build_planet_table handles empty chart",
-      lambda: isinstance(build_planet_table({"bodies": []}), Gtk.ColumnView))
+      lambda: isinstance(build_planet_table({"bodies": []}), Gtk.Box))
+
+# 6. Item 35 regression: sort buttons must actually RENDER in the
+#    realized widget tree (the old header-factory buttons never appeared
+#    on GTK 4.22), and clicking the realized button must re-sort.
+def _realized_sort_buttons_render():
+    widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
+    view = _find_column_view(widget)
+    win = _realize(widget)
+    realized = [w for w in _walk(win) if isinstance(w, Gtk.Button)]
+    labels = {b.get_label() for b in realized}
+    # The sort row's buttons must be present in the realized tree.
+    for title in ("Priority", "Days", "T Body", "Aspect"):
+        assert title in labels or f"▼ {title}" in labels or f"▲ {title}" in labels, \
+            f"sort button {title!r} not rendered; realized labels: {sorted(labels)}"
+    # The active (default) button shows the marker.
+    assert "▼ Priority" in labels, f"expected ▼ Priority marker, got {sorted(labels)}"
+    # Clicking the REALIZED Priority button re-sorts the model.
+    sm = view._sort_model
+    prio = lambda: [sm.get_item(i).sort_priority for i in range(sm.get_n_items())]
+    assert prio() == [128, 119], f"expected default priority desc, got {prio()}"
+    prio_btn = next(b for b in realized if b.get_label() == "▼ Priority")
+    prio_btn.emit("clicked")
+    assert prio() == [119, 128], f"expected priority asc after realized click, got {prio()}"
+    # Re-click inverts back.
+    asc_btn = next(b for b in realized if b.get_label() == "▲ Priority")
+    asc_btn.emit("clicked")
+    assert prio() == [128, 119], f"expected priority desc after realized re-click, got {prio()}"
+
+
+check("realized tree renders sort buttons; realized click re-sorts + inverts",
+      _realized_sort_buttons_render)
+
+
+def _realized_planet_table_sort():
+    widget = build_planet_table(chart)
+    view = _find_column_view(widget)
+    win = _realize(widget)
+    realized = [w for w in _walk(win) if isinstance(w, Gtk.Button)]
+    labels = {b.get_label() for b in realized}
+    assert "▲ Degree" in labels, f"expected ▲ Degree marker, got {sorted(labels)}"
+    sm = view._sort_model
+    deg = lambda: [round(sm.get_item(i).sort_degree, 1)
+                   for i in range(sm.get_n_items())]
+    assert deg() == [147.3, 248.7], f"expected default degree asc, got {deg()}"
+    deg_btn = next(b for b in realized if b.get_label() == "▲ Degree")
+    deg_btn.emit("clicked")
+    assert deg() == [248.7, 147.3], f"expected degree desc after realized click, got {deg()}"
+
+
+check("realized natal table: sort button renders + click re-sorts",
+      _realized_planet_table_sort)
+
+
+def _realized_agg_table_sort():
+    widget = build_planet_agg_table(agg)
+    view = _find_column_view(widget)
+    win = _realize(widget)
+    realized = [w for w in _walk(win) if isinstance(w, Gtk.Button)]
+    labels = {b.get_label() for b in realized}
+    assert "▼ Total" in labels, f"expected ▼ Total marker, got {sorted(labels)}"
+    sm = view._sort_model
+    tot = lambda: [sm.get_item(i).sort_total for i in range(sm.get_n_items())]
+    assert tot() == [197, 172], f"expected default total desc, got {tot()}"
+    tot_btn = next(b for b in realized if b.get_label() == "▼ Total")
+    tot_btn.emit("clicked")
+    assert tot() == [172, 197], f"expected total asc after realized click, got {tot()}"
+
+
+check("realized by-planet table: sort button renders + click re-sorts",
+      _realized_agg_table_sort)
 
 print(f"\nResults: {passed} passed, {failed} failed")
 if failed:
