@@ -140,6 +140,7 @@ class PersonDialog(Gtk.Dialog):
     # ------------------------------------------------------------------
     NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
     REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
+    TIMEAPI_URL = "https://timeapi.io/api/Time/current/coordinate"
     USER_AGENT = "astro-gui/0.5 (personal use)"
     GEO_TIMEOUT = 10
 
@@ -213,6 +214,8 @@ class PersonDialog(Gtk.Dialog):
         tz = self._valid_timezone(hit.get("timezone"))
         if tz is None:
             tz = self._reverse_timezone(lat, lon)
+        if tz is None:
+            tz = self._timeapi_timezone(lat, lon)
         return lat, lon, tz
 
     def _reverse_timezone(self, lat, lon):
@@ -235,6 +238,29 @@ class PersonDialog(Gtk.Dialog):
         if not isinstance(payload, dict):
             return None
         return self._valid_timezone(payload.get("timezone"))
+
+    def _timeapi_timezone(self, lat, lon):
+        """Return a validated IANA timezone from timeapi.io, or None.
+
+        Fallback used when neither the Nominatim search hit nor the
+        reverse geocode carried a timezone. timeapi.io returns the
+        IANA zone for a coordinate pair in its ``timeZone`` field.
+        Any failure (network, HTTP error, bad payload, unknown zone)
+        returns None so the caller leaves the timezone unchanged.
+        """
+        params = urllib.parse.urlencode(
+            {"latitude": f"{lat:.6f}", "longitude": f"{lon:.6f}"}
+        )
+        url = f"{self.TIMEAPI_URL}?{params}"
+        request = urllib.request.Request(url, headers={"User-Agent": self.USER_AGENT})
+        try:
+            with urllib.request.urlopen(request, timeout=self.GEO_TIMEOUT) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return self._valid_timezone(payload.get("timeZone"))
 
     def _valid_timezone(self, value):
         """Return value as a timezone string when it is a known IANA zone, else None."""
