@@ -1,4 +1,5 @@
 """Unit tests for astro_display SVG wheel renderer."""
+import math
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -189,6 +190,134 @@ def test_render_transit_returns_valid_svg(renderer):
     root = ET.fromstring(svg)
     assert root.tag == "{http://www.w3.org/2000/svg}svg"
     assert "(T)" not in svg  # transit suffix removed (review item 9)
+
+
+def test_render_transit_draws_transit_natal_not_natal_natal(renderer):
+    """Review item 14: transit wheel draws transit-natal aspects, never
+    natal-natal aspects."""
+    natal = {
+        "angles": {"ascendant": 0.0},
+        "houses": SAMPLE_HOUSES,
+        "bodies": SAMPLE_BODIES,  # Sun 15°, Moon 45° — sextile in natal
+        "aspects": SAMPLE_ASPECTS,  # natal Sun-Moon sextile
+    }
+    transit = {
+        "bodies": [
+            {"name": "Mars", "longitude": 120.0, "sign_degree": 0.0, "retrograde": False},
+        ],
+        "cross_aspects": [
+            {"transit_body": "Mars", "natal_body": "Sun",
+             "aspect_name": "Trine", "orb": 1.0},
+        ],
+    }
+    svg = renderer.render_transit(natal, transit)
+    # The natal-natal Sun-Moon sextile must NOT appear as a line.
+    # Sextile color is #69db7c; trine is #4dabf7.
+    assert "#69db7c" not in svg, "natal-natal aspects must not render on transit wheel"
+    assert "#4dabf7" in svg, "transit-natal aspect must render"
+
+
+def test_render_transit_cross_aspect_endpoints_at_planet_radii(renderer):
+    """Review item 14: transit-natal lines run from the transit point
+    (outer ring, R_planet=252) to the natal point (inner, R_planet=225)."""
+    natal = {
+        "angles": {"ascendant": 0.0},
+        "houses": SAMPLE_HOUSES,
+        "bodies": SAMPLE_BODIES,
+        "aspects": [],
+    }
+    transit = {
+        "bodies": [
+            {"name": "Mars", "longitude": 120.0, "sign_degree": 0.0, "retrograde": False},
+        ],
+        "cross_aspects": [
+            {"transit_body": "Mars", "natal_body": "Sun",
+             "aspect_name": "Trine", "orb": 1.0},
+        ],
+    }
+    svg = renderer.render_transit(natal, transit)
+    # Mars at display 120° -> x = cx - r*cos(120°) = 300 + 0.5r, y = cy + r*sin(120°)
+    # Transit endpoint at r=252: x = 300 - 252*cos(120°) = 300 + 126 = 426, y = 300 + 252*0.866 = 518.25
+    # Natal Sun at display 15° -> r=225: x = 300 - 225*cos(15°) = 300 - 217.33 = 82.67, y = 300 + 225*sin(15°) = 358.24
+    import re
+    lines = re.findall(
+        r'<line x1="([0-9.]+)" y1="([0-9.]+)" x2="([0-9.]+)" y2="([0-9.]+)" '
+        r'stroke="#4dabf7"', svg)
+    assert lines, "expected a trine line"
+    x1, y1, x2, y2 = (float(v) for v in lines[0])
+    # One endpoint must be at radius 252 (transit), the other at 225 (natal)
+    r1 = math.hypot(x1 - 300, y1 - 300)
+    r2 = math.hypot(x2 - 300, y2 - 300)
+    assert sorted([round(r1), round(r2)]) == [225, 252], (
+        f"cross-aspect endpoints must be at planet radii, got {r1:.1f}, {r2:.1f}"
+    )
+
+
+def test_render_synastry_cross_aspect_endpoints_at_planet_radii(renderer):
+    """Review item 17: synastry cross-aspect lines end at the planet radii
+    (person A R_planet=205, person B R_planet=245)."""
+    chart_a = {
+        "angles": {"ascendant": 0.0},
+        "houses": SAMPLE_HOUSES,
+        "bodies": SAMPLE_BODIES,
+    }
+    chart_b = {
+        "angles": {"ascendant": 10.0},
+        "houses": SAMPLE_HOUSES,
+        "bodies": [
+            {"name": "Mars", "longitude": 120.0, "sign_degree": 0.0, "retrograde": False},
+        ],
+    }
+    cross_aspects = [
+        {"body_a": "Sun", "body_b": "Mars", "aspect_name": "Trine", "orb": 1.0},
+    ]
+    svg = renderer.render_synastry(chart_a, chart_b, cross_aspects)
+    import re
+    lines = re.findall(
+        r'<line x1="([0-9.]+)" y1="([0-9.]+)" x2="([0-9.]+)" y2="([0-9.]+)" '
+        r'stroke="#4dabf7"', svg)
+    assert lines, "expected a trine line"
+    x1, y1, x2, y2 = (float(v) for v in lines[0])
+    r1 = math.hypot(x1 - 300, y1 - 300)
+    r2 = math.hypot(x2 - 300, y2 - 300)
+    assert sorted([round(r1), round(r2)]) == [205, 245], (
+        f"synastry cross-aspect endpoints must be at planet radii, got {r1:.1f}, {r2:.1f}"
+    )
+
+
+def test_render_sign_ticks_present(renderer):
+    """Review item 13: a radial tick at each sign cusp (12 ticks)."""
+    chart = {
+        "angles": {"ascendant": 0.0},
+        "houses": SAMPLE_HOUSES,
+        "bodies": [],
+        "aspects": [],
+    }
+    svg = renderer.render_natal(chart)
+    # Ticks are lines with stroke #888888 and width 1.2
+    import re
+    ticks = re.findall(r'<line [^>]*stroke="#888888" stroke-width="1.2"', svg)
+    assert len(ticks) == 12, f"expected 12 sign ticks, got {len(ticks)}"
+
+
+def test_render_aspects_skips_node_node_and_asc_mc(renderer):
+    """Review item 12: no aspects between nodes, or between Asc and MC."""
+    chart = {
+        "angles": {"ascendant": 0.0, "mc": 90.0},
+        "houses": SAMPLE_HOUSES,
+        "bodies": [
+            {"name": "Mean Node", "longitude": 10.0, "sign_degree": 10.0, "retrograde": False},
+            {"name": "True Node", "longitude": 20.0, "sign_degree": 20.0, "retrograde": False},
+        ],
+        "aspects": [
+            {"body_a": "Mean Node", "body_b": "True Node", "aspect_name": "Conjunction"},
+            {"body_a": "Asc", "body_b": "MC", "aspect_name": "Square"},
+        ],
+    }
+    svg = renderer.render_natal(chart)
+    # Conjunction color #ffff00 and square color #ff8787 must not appear
+    assert "#ffff00" not in svg, "node-node aspect must be skipped"
+    assert "#ff8787" not in svg, "Asc-MC aspect must be skipped"
 
 
 def test_render_transit_retrograde_subscript_right(renderer):

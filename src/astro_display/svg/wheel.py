@@ -262,9 +262,11 @@ class WheelRenderer:
         transit_lookup = {b["name"]: b["longitude"] for b in transit_bodies}
         if aspect_mode in ("transit-natal", "both"):
             cross = transit_data.get("cross_aspects", [])
+            # Lines run from the transit point (outer ring, R_planet=252)
+            # to the natal point (inner ring, R_planet=225) — review item 14.
             parts.extend(self._render_cross_aspects(
                 cross, transit_lookup, natal_lookup, ascendant,
-                r_a=self.R_aspect - 20, r_b=self.R_aspect + 20,
+                r_a=252.0, r_b=self.R_planet,
             ))
         if aspect_mode in ("transit-transit", "both"):
             # aspects among transiting bodies: compute on the fly
@@ -365,7 +367,12 @@ class WheelRenderer:
 
         lookup_a = {b["name"]: b["longitude"] for b in bodies_a}
         lookup_b = {b["name"]: b["longitude"] for b in bodies_b}
-        parts.extend(self._render_cross_aspects(cross_aspects, lookup_a, lookup_b, ascendant_a))
+        # Line ends must meet the representative points: person A glyphs at
+        # R_planet=205, person B glyphs at R_planet=245 (review item 17).
+        parts.extend(self._render_cross_aspects(
+            cross_aspects, lookup_a, lookup_b, ascendant_a,
+            r_a=self.R_planet, r_b=245.0,
+        ))
 
         parts.extend(self._render_planets(bodies_a, ascendant_a, color="#ffffff"))
 
