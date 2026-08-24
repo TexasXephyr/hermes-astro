@@ -32,6 +32,10 @@ from astro_gui.renderers.calendar_renderer import (
     calendar_csv_rows,
     CALENDAR_CSV_COLUMNS,
 )
+from astro_gui.renderers.cookbook_renderer import (
+    build_cookbook_list,
+    natal_cookbook_entries,
+)
 from astro_text.symbols import symbol_for_body, symbol_for_sign, symbol_for_aspect
 from astro_text.format import format_degree
 from astro_text.dignity import get_dignity
@@ -199,6 +203,7 @@ class MainWindow(Gtk.ApplicationWindow):
     PAGE_TRANSIT_GRID = 4
     PAGE_BY_PLANET = 5
     PAGE_CALENDAR = 6
+    PAGE_COOKBOOK = 7
 
     def __init__(self, app=None, **kwargs):
         super().__init__(application=app, **kwargs)
@@ -218,6 +223,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._transit_grid_data = None
         self._by_planet_rows = None
         self._calendar_data = None
+        self._cookbook_entries = None
 
         # Root vertical box
         root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -314,6 +320,10 @@ class MainWindow(Gtk.ApplicationWindow):
         btn_calendar.connect("clicked", lambda _b: self._show_calendar())
         sidebar_box.append(btn_calendar)
 
+        btn_cookbook = Gtk.Button(label="Cookbook")
+        btn_cookbook.connect("clicked", lambda _b: self._show_cookbook())
+        sidebar_box.append(btn_cookbook)
+
         # Save / export the currently displayed chart (item 33)
         btn_save = Gtk.Button(label="Save...")
         btn_save.set_tooltip_text("Export the displayed chart: PNG (wheels) or CSV (tables)")
@@ -355,6 +365,7 @@ class MainWindow(Gtk.ApplicationWindow):
             "calendar_start": self._calendar_start.get_text(),
             "calendar_end": self._calendar_end.get_text(),
             "calendar_aspect": self._calendar_aspect.get_selected_item().get_string(),
+            "cookbook_mode": self._cookbook_mode.get_selected_item().get_string(),
         }
         # Transit grid filter state (point / aspect / sign / house), if present
         grid = self._transit_grid_view()
@@ -400,6 +411,8 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._calendar_end.set_text(str(config["calendar_end"]))
             if "calendar_aspect" in config:
                 self._set_dropdown_by_string(self._calendar_aspect, str(config["calendar_aspect"]))
+            if "cookbook_mode" in config:
+                self._set_dropdown_by_string(self._cookbook_mode, str(config["cookbook_mode"]))
             # Transit grid filter state
             grid = self._transit_grid_view()
             if grid is not None:
@@ -715,6 +728,33 @@ class MainWindow(Gtk.ApplicationWindow):
 
         notebook.append_page(self._calendar_scroll, Gtk.Label(label="Calendar"))
 
+        # --- Tab 8: Cookbook (grounded corpus prose per placement) ---
+        self._cookbook_scroll = Gtk.ScrolledWindow()
+        self._cookbook_scroll.set_hexpand(True)
+        self._cookbook_scroll.set_vexpand(True)
+        cookbook_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self._cookbook_scroll.set_child(cookbook_box)
+
+        cb_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        cb_controls.set_spacing(6)
+        cb_controls.set_margin_top(6)
+        cb_controls.set_margin_start(6)
+        cb_controls.set_margin_end(6)
+        cb_controls.append(Gtk.Label(label="Mode:"))
+        self._cookbook_mode = Gtk.DropDown.new_from_strings(["Natal"])
+        self._cookbook_mode.set_selected(0)
+        cb_controls.append(self._cookbook_mode)
+        btn_cb_go = Gtk.Button(label="Update")
+        btn_cb_go.connect("clicked", lambda _b: self._refresh_cookbook())
+        cb_controls.append(btn_cb_go)
+        cookbook_box.append(cb_controls)
+
+        self._cookbook_view_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        cookbook_box.append(self._cookbook_view_box)
+        self._cookbook_view_box.set_vexpand(True)
+
+        notebook.append_page(self._cookbook_scroll, Gtk.Label(label="Cookbook"))
+
         notebook.set_current_page(self.PAGE_NATAL_WHEEL)
         return notebook
 
@@ -825,6 +865,11 @@ class MainWindow(Gtk.ApplicationWindow):
         """Switch to the Calendar tab and refresh."""
         self._notebook.set_current_page(self.PAGE_CALENDAR)
         self._refresh_calendar()
+
+    def _show_cookbook(self):
+        """Switch to the Cookbook tab and refresh."""
+        self._notebook.set_current_page(self.PAGE_COOKBOOK)
+        self._refresh_cookbook()
 
     # ------------------------------------------------------------------
     # Person list management
@@ -1107,6 +1152,45 @@ class MainWindow(Gtk.ApplicationWindow):
             )
         except Exception as exc:
             self._status_bar.set_info(f"Calendar error: {exc}")
+
+    def _refresh_cookbook(self):
+        """Build the Cookbook tab: selectable placements with corpus prose.
+
+        Natal mode (the only mode for now): builds a natal snapshot via
+        the cookbook package and looks up grounded corpus phrases. The
+        list is selectable; the detail pane shows the prose. Missing
+        corpus keys are shown as explicit 'no corpus entry' rows — never
+        invented.
+        """
+        person = self._selected_person
+        if not person:
+            self._status_bar.set_info("No person selected")
+            return
+        try:
+            from astro_transit_cookbook.core import (
+                build_natal_snapshot,
+                build_natal_cookbook,
+                open_corpus,
+            )
+            snapshot = build_natal_snapshot(person.get("name"))
+            conn = open_corpus()
+            try:
+                cookbook = build_natal_cookbook(snapshot, conn)
+            finally:
+                conn.close()
+            entries = natal_cookbook_entries(snapshot, cookbook)
+            self._cookbook_entries = entries
+            view = build_cookbook_list(entries)
+            child = self._cookbook_view_box.get_first_child()
+            while child is not None:
+                self._cookbook_view_box.remove(child)
+                child = self._cookbook_view_box.get_first_child()
+            self._cookbook_view_box.append(view)
+            self._status_bar.set_info(
+                f"Cookbook for {person.get('name')} — {len(entries)} placements"
+            )
+        except Exception as exc:
+            self._status_bar.set_info(f"Cookbook error: {exc}")
 
     def _load_synastry_chart(self, person_a, person_b):
         """Fetch synastry data and render two-ring synastry wheel."""
