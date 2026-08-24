@@ -4,6 +4,11 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk
 
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+
 from datetime import datetime
 from zoneinfo import available_timezones
 
@@ -12,8 +17,11 @@ class PersonDialog(Gtk.Dialog):
     """Modal dialog for creating or editing a person's birth data.
 
     Fields: Name, Birth Date (YYYY-MM-DD), Birth Time (HH:MM:SS),
-    Timezone (IANA), Latitude, Longitude. Validation errors are shown
-    in an error label and keep the dialog open.
+    Timezone (IANA), Latitude, Longitude, plus a Location search that
+    geocodes via Nominatim and fills Latitude/Longitude. Validation
+    errors are shown in an error label and keep the dialog open.
+    Geocoding failures (network, no results, invalid response) are
+    shown in a search label and never close the dialog.
     """
 
     __gtype_name__ = "AstroPersonDialog"
@@ -61,12 +69,32 @@ class PersonDialog(Gtk.Dialog):
             grid.attach(lbl, 0, i, 1, 1)
             grid.attach(entry, 1, i, 1, 1)
 
+        # Location search row: geocodes via Nominatim and fills lat/lon.
+        search_row = len(rows)
+        self._location_entry = Gtk.Entry()
+        self._location_entry.set_placeholder_text("e.g. Portland, OR")
+        self._location_entry.connect("activate", self._on_search_clicked)
+        self._search_btn = Gtk.Button(label="Search")
+        self._search_btn.connect("clicked", self._on_search_clicked)
+        loc_lbl = Gtk.Label(label="Location")
+        loc_lbl.set_xalign(0.0)
+        grid.attach(loc_lbl, 0, search_row, 1, 1)
+        grid.attach(self._location_entry, 1, search_row, 1, 1)
+        grid.attach(self._search_btn, 2, search_row, 1, 1)
+
+        # Search feedback label (geocode errors / success), never fatal.
+        self._search_label = Gtk.Label(label="")
+        self._search_label.set_visible(False)
+        self._search_label.set_wrap(True)
+        self._search_label.set_xalign(0.0)
+        grid.attach(self._search_label, 0, search_row + 1, 3, 1)
+
         self._error_label = Gtk.Label(label="")
         self._error_label.set_visible(False)
         self._error_label.add_css_class("error")
         self._error_label.set_wrap(True)
         self._error_label.set_xalign(0.0)
-        grid.attach(self._error_label, 0, len(rows), 2, 1)
+        grid.attach(self._error_label, 0, search_row + 2, 3, 1)
 
         content.append(grid)
 
@@ -93,6 +121,72 @@ class PersonDialog(Gtk.Dialog):
             self._lat_entry.set_text(f"{meta['latitude']:.4f}")
         if meta.get("longitude") is not None:
             self._lon_entry.set_text(f"{meta['longitude']:.4f}")
+
+    # ------------------------------------------------------------------
+    # Location search (Nominatim geocoding)
+    # ------------------------------------------------------------------
+    NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+    USER_AGENT = "astro-gui/0.5 (personal use)"
+
+    def _on_search_clicked(self, _widget=None):
+        """Geocode the Location entry and fill Latitude/Longitude.
+
+        Failures (network, no results, invalid response) are shown in
+        the search label; the dialog is never closed or crashed.
+        """
+        query = self._location_entry.get_text().strip()
+        if not query:
+            self._set_search_message("Enter a location to search for.", error=True)
+            return
+        self._set_search_message("Searching\u2026", error=False)
+        try:
+            result = self._geocode(query)
+        except Exception as exc:
+            self._set_search_message(f"Location search failed: {exc}", error=True)
+            return
+        if result is None:
+            self._set_search_message("No results for that location.", error=True)
+            return
+        lat, lon = result
+        self._lat_entry.set_text(f"{lat:.6f}")
+        self._lon_entry.set_text(f"{lon:.6f}")
+        self._set_search_message(f"Found: {lat:.6f}, {lon:.6f}", error=False)
+
+    def _geocode(self, query):
+        """Return (lat, lon) floats for query, or None when no results."""
+        params = urllib.parse.urlencode({"format": "json", "q": query, "limit": 1})
+        url = f"{self.NOMINATIM_URL}?{params}"
+        request = urllib.request.Request(url, headers={"User-Agent": self.USER_AGENT})
+        try:
+            with urllib.request.urlopen(request, timeout=10) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"Nominatim HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Network error: {exc.reason}") from exc
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise RuntimeError("Invalid response from Nominatim.") from exc
+        if not isinstance(payload, list):
+            raise RuntimeError("Invalid response from Nominatim.")
+        if not payload:
+            return None
+        hit = payload[0]
+        if not isinstance(hit, dict) or "lat" not in hit or "lon" not in hit:
+            raise RuntimeError("Invalid response from Nominatim.")
+        try:
+            lat = float(hit["lat"])
+            lon = float(hit["lon"])
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Invalid coordinates from Nominatim.") from exc
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            raise RuntimeError("Invalid coordinates from Nominatim.")
+        return lat, lon
+
+    def _set_search_message(self, message, error=False):
+        self._search_label.set_text(message)
+        self._search_label.set_visible(True)
+        self._search_label.set_css_classes(["error"] if error else [])
+        self._search_label.set_tooltip_text(message)
 
     # ------------------------------------------------------------------
     # Validation

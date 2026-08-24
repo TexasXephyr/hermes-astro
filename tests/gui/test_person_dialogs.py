@@ -8,8 +8,11 @@ without a display (GTK widgets instantiate headless).
 import sys
 sys.path.insert(0, "/home/xephyr/astro/src")
 
+import json
 import os
 import tempfile
+import unittest.mock
+import urllib.error
 
 import gi
 gi.require_version("Gtk", "4.0")
@@ -164,6 +167,121 @@ def _prefill_from_chart():
 
 
 check("edit dialog prefills from chart meta", _prefill_from_chart)
+
+
+# ------------------------------------------------------------------
+# 2b. PersonDialog: location search fills lat/lon (mock Nominatim)
+# ------------------------------------------------------------------
+class _FakeResponse:
+    def __init__(self, payload, status=200):
+        self._body = json.dumps(payload).encode("utf-8")
+        self.status = status
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _fake_urlopen(payload):
+    def opener(request, timeout=None):
+        return _FakeResponse(payload)
+    return opener
+
+
+def _search_fills_coords():
+    d = PersonDialog()
+    _fill(d)
+    d._location_entry.set_text("Portland, OR")
+    with unittest.mock.patch(
+        "astro_gui.widgets.person_dialog.urllib.request.urlopen",
+        _fake_urlopen([{"lat": "45.5152", "lon": "-122.6784"}]),
+    ):
+        d._on_search_clicked()
+    assert d._lat_entry.get_text() == "45.515200", d._lat_entry.get_text()
+    assert d._lon_entry.get_text() == "-122.678400", d._lon_entry.get_text()
+    assert d._search_label.get_visible() is True
+    assert "Found" in d._search_label.get_text()
+    # Validation still works with the filled values
+    d.response(Gtk.ResponseType.OK)
+    values = d.get_values()
+    assert values is not None, "lat/lon filled by search must validate"
+    assert abs(values["latitude"] - 45.5152) < 1e-6
+    assert abs(values["longitude"] - -122.6784) < 1e-6
+    d.destroy()
+
+
+check("location search fills lat/lon", _search_fills_coords)
+
+
+def _search_no_results():
+    d = PersonDialog()
+    d._location_entry.set_text("zzz nowhere")
+    with unittest.mock.patch(
+        "astro_gui.widgets.person_dialog.urllib.request.urlopen",
+        _fake_urlopen([]),
+    ):
+        d._on_search_clicked()
+    assert "No results" in d._search_label.get_text()
+    assert d._lat_entry.get_text() == ""
+    d.present()
+    assert d.get_visible() is True
+    d.destroy()
+
+
+check("location search no results shows error, keeps dialog", _search_no_results)
+
+
+def _search_network_error():
+    d = PersonDialog()
+    d._location_entry.set_text("Portland, OR")
+    with unittest.mock.patch(
+        "astro_gui.widgets.person_dialog.urllib.request.urlopen",
+        unittest.mock.Mock(side_effect=urllib.error.URLError("boom")),
+    ):
+        d._on_search_clicked()
+    assert "failed" in d._search_label.get_text().lower()
+    assert d._lat_entry.get_text() == ""
+    d.present()
+    assert d.get_visible() is True
+    d.destroy()
+
+
+check("location search network error shows error, keeps dialog", _search_network_error)
+
+
+def _search_invalid_response():
+    d = PersonDialog()
+    d._location_entry.set_text("Portland, OR")
+    with unittest.mock.patch(
+        "astro_gui.widgets.person_dialog.urllib.request.urlopen",
+        _fake_urlopen({"not": "a list"}),
+    ):
+        d._on_search_clicked()
+    assert "failed" in d._search_label.get_text().lower()
+    assert d._lat_entry.get_text() == ""
+    d.destroy()
+
+
+check("location search invalid response shows error", _search_invalid_response)
+
+
+def _search_empty_query():
+    d = PersonDialog()
+    with unittest.mock.patch(
+        "astro_gui.widgets.person_dialog.urllib.request.urlopen"
+    ) as mock_urlopen:
+        d._on_search_clicked()
+    mock_urlopen.assert_not_called()
+    assert "Enter a location" in d._search_label.get_text()
+    d.destroy()
+
+
+check("location search empty query does not hit network", _search_empty_query)
 
 
 # ------------------------------------------------------------------
