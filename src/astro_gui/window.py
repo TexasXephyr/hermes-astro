@@ -168,6 +168,28 @@ class MainWindow(Gtk.ApplicationWindow):
         self._transit_time.set_max_width_chars(10)
         controls.append(self._transit_time)
 
+        controls.append(Gtk.Label(label="Lat:"))
+        self._transit_lat = Gtk.Entry()
+        self._transit_lat.set_placeholder_text("lat")
+        self._transit_lat.set_max_width_chars(8)
+        controls.append(self._transit_lat)
+
+        controls.append(Gtk.Label(label="Lon:"))
+        self._transit_lon = Gtk.Entry()
+        self._transit_lon.set_placeholder_text("lon")
+        self._transit_lon.set_max_width_chars(9)
+        controls.append(self._transit_lon)
+
+        controls.append(Gtk.Label(label="Aspects:"))
+        self._transit_aspect_mode = Gtk.DropDown.new_from_strings([
+            "transit-natal", "transit-transit", "both",
+        ])
+        self._transit_aspect_mode.set_selected(0)  # transit-natal default
+        self._transit_aspect_mode.connect(
+            "notify::selected", lambda _d, _p: self._refresh_transit()
+        )
+        controls.append(self._transit_aspect_mode)
+
         btn_now = Gtk.Button(label="Now")
         btn_now.connect("clicked", lambda _b: self._set_transit_now())
         controls.append(btn_now)
@@ -353,6 +375,14 @@ class MainWindow(Gtk.ApplicationWindow):
         name = person_dict.get("name", "Unknown")
         self._status_bar.set_info(f"Loading chart for {name}...")
         self._load_natal_chart(person_dict)
+        # Prefill transit lat/lon from the natal chart's location
+        chart = self._get_chart(person_dict)
+        if chart is not None:
+            meta = chart.get("meta", {})
+            if meta.get("latitude") is not None:
+                self._transit_lat.set_text(f"{meta['latitude']:.4f}")
+            if meta.get("longitude") is not None:
+                self._transit_lon.set_text(f"{meta['longitude']:.4f}")
         for i, p in enumerate(self._all_people):
             if p.get("id") == person_dict.get("id"):
                 next_idx = (i + 1) % len(self._all_people) if len(self._all_people) > 1 else 0
@@ -409,7 +439,12 @@ class MainWindow(Gtk.ApplicationWindow):
             chart_id = person_dict.get("chart_id")
             date = self._transit_date.get_text()
             time = self._transit_time.get_text()
-            result = self._client.transit(chart_id, date, time)
+            # Location override: use the lat/lon fields if filled, else natal
+            lat_text = self._transit_lat.get_text().strip()
+            lon_text = self._transit_lon.get_text().strip()
+            lat = float(lat_text) if lat_text else None
+            lon = float(lon_text) if lon_text else None
+            result = self._client.transit(chart_id, date, time, latitude=lat, longitude=lon)
             if result.get("status") != "ok":
                 self._status_bar.set_info(f"Transit error: {result.get('message', 'Unknown')}")
                 return
@@ -419,11 +454,19 @@ class MainWindow(Gtk.ApplicationWindow):
                 "bodies": natal_chart.get("bodies", []),
                 "aspects": natal_chart.get("aspects", []),
             }
-            transit_data = {"bodies": result.get("bodies", [])}
-            svg = self._renderer.render_transit(natal_data, transit_data)
+            transit_data = {
+                "bodies": result.get("bodies", []),
+                "cross_aspects": result.get("cross_aspects", []),
+            }
+            aspect_mode = self._transit_aspect_mode.get_selected_item().get_string()
+            svg = self._renderer.render_transit(
+                natal_data, transit_data, aspect_mode=aspect_mode
+            )
             self._display_svg(svg, self._transit_picture)
+            loc = f" @ {lat_text},{lon_text}" if lat_text and lon_text else ""
             self._status_bar.set_info(
-                f"Transit for {person_dict.get('name')} on {date} {time}"
+                f"Transit for {person_dict.get('name')} on {date} {time}{loc} "
+                f"[{aspect_mode}]"
             )
         except Exception as exc:
             self._status_bar.set_info(f"Transit error: {exc}")

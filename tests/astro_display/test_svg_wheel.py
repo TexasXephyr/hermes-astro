@@ -253,6 +253,83 @@ def test_render_transit_cross_aspect_endpoints_at_planet_radii(renderer):
     )
 
 
+def test_render_transit_aspect_mode_transit_transit(renderer):
+    """Review item 15: aspect_mode='transit-transit' draws aspects among
+    transiting bodies only (no transit-natal cross lines)."""
+    natal = {
+        "angles": {"ascendant": 0.0},
+        "houses": SAMPLE_HOUSES,
+        "bodies": SAMPLE_BODIES,  # Sun 15°, Moon 45°
+        "aspects": [],
+    }
+    transit = {
+        "bodies": [
+            {"name": "Mars", "longitude": 120.0, "sign_degree": 0.0, "retrograde": False, "speed": 0.5},
+            {"name": "Venus", "longitude": 180.0, "sign_degree": 0.0, "retrograde": False, "speed": 1.2},
+        ],
+        "cross_aspects": [
+            {"transit_body": "Mars", "natal_body": "Sun",
+             "aspect_name": "Trine", "orb": 1.0},
+        ],
+    }
+    svg = renderer.render_transit(natal, transit, aspect_mode="transit-transit")
+    # Mars 120° vs Venus 180° = 60° = sextile (#69db7c)
+    assert "#69db7c" in svg, "transit-transit sextile must render"
+    # The transit-natal trine (#4dabf7) must NOT render in this mode
+    assert "#4dabf7" not in svg, "transit-natal aspects must not render in transit-transit mode"
+
+
+def test_render_transit_aspect_mode_both(renderer):
+    """Review item 15: aspect_mode='both' draws transit-natal AND
+    transit-transit, with transit-transit in a distinct dashed yellow."""
+    natal = {
+        "angles": {"ascendant": 0.0},
+        "houses": SAMPLE_HOUSES,
+        "bodies": SAMPLE_BODIES,  # Sun 15°, Moon 45°
+        "aspects": [],
+    }
+    transit = {
+        "bodies": [
+            {"name": "Mars", "longitude": 120.0, "sign_degree": 0.0, "retrograde": False, "speed": 0.5},
+            {"name": "Venus", "longitude": 180.0, "sign_degree": 0.0, "retrograde": False, "speed": 1.2},
+        ],
+        "cross_aspects": [
+            {"transit_body": "Mars", "natal_body": "Sun",
+             "aspect_name": "Trine", "orb": 1.0},
+        ],
+    }
+    svg = renderer.render_transit(natal, transit, aspect_mode="both")
+    # transit-natal trine present
+    assert "#4dabf7" in svg, "transit-natal aspect must render in both mode"
+    # transit-transit sextile present, in the distinct yellow with dash
+    assert 'stroke="#ffd43b"' in svg, "transit-transit must use distinct yellow in both mode"
+    assert "stroke-dasharray" in svg, "transit-transit must be dashed in both mode"
+
+
+def test_render_transit_aspect_mode_default_is_transit_natal(renderer):
+    """Review item 15: default aspect_mode is transit-natal."""
+    natal = {
+        "angles": {"ascendant": 0.0},
+        "houses": SAMPLE_HOUSES,
+        "bodies": SAMPLE_BODIES,
+        "aspects": [],
+    }
+    transit = {
+        "bodies": [
+            {"name": "Mars", "longitude": 120.0, "sign_degree": 0.0, "retrograde": False, "speed": 0.5},
+            {"name": "Venus", "longitude": 180.0, "sign_degree": 0.0, "retrograde": False, "speed": 1.2},
+        ],
+        "cross_aspects": [
+            {"transit_body": "Mars", "natal_body": "Sun",
+             "aspect_name": "Trine", "orb": 1.0},
+        ],
+    }
+    svg = renderer.render_transit(natal, transit)
+    assert "#4dabf7" in svg, "default mode must draw transit-natal aspects"
+    # transit-transit sextile must NOT be drawn by default
+    assert "#69db7c" not in svg, "default mode must not draw transit-transit aspects"
+
+
 def test_render_synastry_cross_aspect_endpoints_at_planet_radii(renderer):
     """Review item 17: synastry cross-aspect lines end at the planet radii
     (person A R_planet=205, person B R_planet=245)."""

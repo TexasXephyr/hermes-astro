@@ -271,7 +271,13 @@ class WheelRenderer:
         if aspect_mode in ("transit-transit", "both"):
             # aspects among transiting bodies: compute on the fly
             transit_aspects = self._compute_inner_aspects(transit_bodies)
-            parts.extend(self._render_aspects(transit_aspects, transit_lookup, ascendant))
+            # In "both" mode, transit-transit lines get a distinct style
+            # (yellow + dashed) so they read separately from transit-natal.
+            parts.extend(self._render_aspects(
+                transit_aspects, transit_lookup, ascendant,
+                color_override="#ffd43b" if aspect_mode == "both" else None,
+                dashed=aspect_mode == "both",
+            ))
 
         parts.extend(self._render_planets(natal_bodies, ascendant))
         parts.extend(self._render_angle_points(natal_angles, ascendant))
@@ -533,9 +539,11 @@ class WheelRenderer:
         return parts
 
     def _render_aspects(
-        self, aspects: List[Dict], body_lookup: Dict[str, float], ascendant: float
+        self, aspects: List[Dict], body_lookup: Dict[str, float], ascendant: float,
+        color_override: str | None = None, dashed: bool = False,
     ) -> List[str]:
         parts: List[str] = []
+        dash_attr = ' stroke-dasharray="4,3"' if dashed else ""
         for asp in aspects:
             a_name = str(asp.get("body_a") or "")
             b_name = str(asp.get("body_b") or "")
@@ -552,7 +560,7 @@ class WheelRenderer:
             ang_b = _display_angle(lon_b, ascendant)
             x1, y1 = _polar(self.cx, self.cy, self.R_aspect, ang_a)
             x2, y2 = _polar(self.cx, self.cy, self.R_aspect, ang_b)
-            color = _aspect_color(asp)
+            color = color_override or _aspect_color(asp)
             orb = _aspect_orb(asp)
             # opacity: orb 0 -> 1.0, fading to 0.25 at orb >= 8
             if orb is None:
@@ -561,7 +569,7 @@ class WheelRenderer:
                 opacity = max(0.25, min(1.0, 1.0 - (abs(orb) / 10.0)))
             parts.append(
                 f'    <line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" '
-                f'stroke="{color}" stroke-width="1.2" opacity="{opacity:.2f}"/>\n'
+                f'stroke="{color}" stroke-width="1.2" opacity="{opacity:.2f}"{dash_attr}/>\n'
             )
         return parts
 

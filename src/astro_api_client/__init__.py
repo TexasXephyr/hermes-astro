@@ -531,8 +531,15 @@ class AstroClient:
         self._save_chart(chart_id, result)
         return result
 
-    def transit(self, chart_id: str, date: str, time: str = "12:00:00") -> dict:
-        """Calculate transit chart for a given date."""
+    def transit(self, chart_id: str, date: str, time: str = "12:00:00",
+                latitude: float | None = None, longitude: float | None = None,
+                timezone: str | None = None) -> dict:
+        """Calculate transit chart for a given date.
+
+        latitude/longitude/timezone override the natal chart's location
+        (used by the GUI's transit tab to compute the sky for a different
+        place; defaults to the natal location).
+        """
         if self.backend == "http":
             return make_transit(chart_id, date, time, base_url=self.base_url)
 
@@ -544,13 +551,17 @@ class AstroClient:
         datetime.strptime(date, "%Y-%m-%d")
         datetime.strptime(time, "%H:%M:%S")
 
-        jd, _ = _parse_datetime(date, time, meta["timezone"])
+        lat = meta["latitude"] if latitude is None else latitude
+        lon = meta["longitude"] if longitude is None else longitude
+        tz = meta["timezone"] if timezone is None else timezone
+
+        jd, _ = _parse_datetime(date, time, tz)
         body_ids = [
             body_id_from_name(b["name"])
             for b in natal["bodies"]
             if b.get("name", "").lower() != "south node"
         ]
-        transit_data = ac_calc_chart(jd, meta["latitude"], meta["longitude"],
+        transit_data = ac_calc_chart(jd, lat, lon,
                                      body_ids, meta["house_system"])
         transit_bodies = _insert_south_node(transit_data["bodies"])
 
