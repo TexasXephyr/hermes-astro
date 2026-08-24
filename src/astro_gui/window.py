@@ -6,9 +6,11 @@ Transit Grid (priority-sorted), By Planet (relative value aggregation).
 """
 from __future__ import annotations
 
+import re
+
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, GObject, Gdk, Gio
+from gi.repository import Gtk, GObject, Gdk, Gio, GLib
 
 from typing import Tuple
 
@@ -21,7 +23,160 @@ from astro_display import WheelRenderer, TableRenderer
 from astro_gui.renderers.table_renderer import (
     build_transit_grid,
     build_planet_agg_table,
+    format_days,
 )
+from astro_text.symbols import symbol_for_body, symbol_for_sign, symbol_for_aspect
+from astro_text.format import format_degree
+from astro_text.dignity import get_dignity
+from astro_text.houses import find_house
+
+
+# ------------------------------------------------------------------
+# Export helpers (pure functions — unit-testable headless)
+# ------------------------------------------------------------------
+
+def _safe_name(name: str) -> str:
+    """Sanitize a person/tab name for use inside a default file name."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", name or "person").strip("_") or "person"
+
+
+def _body_label(name: str) -> str:
+    """'☉ Sun' — Unicode glyph + canonical name (no text fallback)."""
+    glyph = symbol_for_body(name) or ""
+    return f"{glyph} {name}".strip()
+
+
+def _sign_label(name: str) -> str:
+    """'♌ Leo' — Unicode glyph + sign name; '' when the name is empty."""
+    if not name:
+        return ""
+    try:
+        glyph = symbol_for_sign(name)
+    except KeyError:
+        glyph = ""
+    return f"{glyph} {name}".strip()
+
+
+def _aspect_label(name: str) -> str:
+    """'☌ conjunction' — Unicode glyph + aspect name; '' when empty."""
+    if not name:
+        return ""
+    try:
+        glyph = symbol_for_aspect(name)
+    except KeyError:
+        glyph = ""
+    return f"{glyph} {name}".strip()
+
+
+def natal_csv_rows(chart: dict) -> list[dict]:
+    """Rows for the natal table CSV (Body/Sign carry real glyph chars)."""
+    rows = []
+    for b in sorted(chart.get("bodies", []), key=lambda x: x.get("longitude", 0.0)):
+        name = b.get("name", "?")
+        sign = b.get("sign_name", "?")
+        dignity = ""
+        try:
+            dignity = get_dignity(name, sign, sign_degree=b.get("sign_degree", 0.0))["label"]
+        except Exception:
+            dignity = ""
+        rows.append({
+            "Body": _body_label(name),
+            "Sign": _sign_label(sign),
+            "Degree": format_degree(b.get("sign_degree", 0.0)),
+            "House": str(b.get("house", "-")),
+            "Dignity": dignity,
+            "Speed": f"{b.get('speed', 0.0):.3f}",
+            "Retro": "R" if b.get("retrograde") else "",
+        })
+    return rows
+
+
+NATAL_CSV_COLUMNS = ["Body", "Sign", "Degree", "House", "Dignity", "Speed", "Retro"]
+
+
+def transit_grid_csv_rows(data: dict) -> list[dict]:
+    """Rows for the transit grid CSV, mirroring build_transit_grid's lookups.
+
+    `data` is the dict stored by the window when it builds the grid:
+    {active, transit_bodies, natal_bodies, natal_houses}.
+    """
+    active = data.get("active", [])
+    transit_bodies = data.get("transit_bodies") or []
+    natal_bodies = data.get("natal_bodies") or []
+    natal_houses = data.get("natal_houses") or []
+    transit_by_name = {b.get("name", ""): b for b in transit_bodies}
+    natal_by_name = {b.get("name", ""): b for b in natal_bodies}
+
+    rows = []
+    for t in active:
+        tb = t.get("transiting_body", "?")
+        nb = t.get("natal_body", "?")
+        tb_body = transit_by_name.get(tb)
+        nb_body = natal_by_name.get(nb)
+        t_sign = (tb_body or {}).get("sign_name", "")
+        n_sign = (nb_body or {}).get("sign_name", "")
+        # Transit body's natal house = the house it is currently crossing.
+        t_house = ""
+        if tb_body is not None and natal_houses:
+            try:
+                t_house = str(find_house(float(tb_body.get("longitude", 0.0)), natal_houses))
+            except Exception:
+                t_house = ""
+        # Natal body's own house from the natal chart.
+        n_house = ""
+        if nb_body is not None:
+            try:
+                n_house_num = int(nb_body.get("house", 0))
+                n_house = str(n_house_num) if n_house_num else ""
+            except (TypeError, ValueError):
+                n_house = ""
+        rows.append({
+            "T Body": _body_label(tb),
+            "T Sign": _sign_label(t_sign),
+            "T House": t_house,
+            "Aspect": _aspect_label(t.get("aspect", "?")),
+            "N Body": _body_label(nb),
+            "N Sign": _sign_label(n_sign),
+            "N House": n_house,
+            "Orb": f"{t.get('orb', 0.0):.2f}°",
+            "Days": format_days(t.get("days_to_exact", 0)),
+            "Priority": str(t.get("priority", 0)),
+        })
+    return rows
+
+
+TRANSIT_GRID_CSV_COLUMNS = [
+    "T Body", "T Sign", "T House", "Aspect",
+    "N Body", "N Sign", "N House", "Orb", "Days", "Priority",
+]
+
+
+def by_planet_csv_rows(rows: list[dict]) -> list[dict]:
+    """Rows for the by-planet CSV (glyphs on Body and vs-Natal names)."""
+    out = []
+    for r in rows:
+        out.append({
+            "Body": _body_label(r.get("body", "?")),
+            "Total": str(r.get("total_priority", 0)),
+            "Count": str(r.get("transit_count", 0)),
+            "Top Aspect": _aspect_label(r.get("top_aspect", "")),
+            "vs Natal": _body_label(r.get("top_natal_body", "")),
+        })
+    return out
+
+
+BY_PLANET_CSV_COLUMNS = ["Body", "Total", "Count", "Top Aspect", "vs Natal"]
+
+
+def write_csv_utf16(path: str, columns: list[str], rows: list[dict]) -> None:
+    """Write a CSV with a UTF-16 BOM so Excel/LibreOffice detect it and
+    the Unicode glyph characters survive."""
+    import csv
+    with open(path, "w", encoding="utf-16", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        for r in rows:
+            writer.writerow(r)
 
 
 class MainWindow(Gtk.ApplicationWindow):
@@ -49,6 +204,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self._all_people = []
         self._doc_sets = DocumentSetStore()
         self._restoring = False  # suppress auto-save while applying a set
+        # Export state (item 33): last rendered SVG / table data per tab
+        self._last_wheel_svg = None
+        self._natal_table_chart = None
+        self._transit_grid_data = None
+        self._by_planet_rows = None
 
         # Root vertical box
         root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -140,6 +300,12 @@ class MainWindow(Gtk.ApplicationWindow):
         btn_by_planet = Gtk.Button(label="By Planet")
         btn_by_planet.connect("clicked", lambda _b: self._show_by_planet())
         sidebar_box.append(btn_by_planet)
+
+        # Save / export the currently displayed chart (item 33)
+        btn_save = Gtk.Button(label="Save...")
+        btn_save.set_tooltip_text("Export the displayed chart: PNG (wheels) or CSV (tables)")
+        btn_save.connect("clicked", lambda _b: self._export_current())
+        sidebar_box.append(btn_save)
 
         # Spacer
         spacer = Gtk.Box()
@@ -658,6 +824,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._status_bar.set_info(f"No stored natal chart for {person_dict.get('name')}")
                 return
             svg = self._renderer.render_natal(chart, scale=1.0)
+            self._last_wheel_svg = svg
             self._display_svg(svg, self._natal_picture)
             bodies = chart.get("bodies", [])
             sun = next((b for b in bodies if b.get("name") == "Sun"), None)
@@ -676,6 +843,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._status_bar.set_info(f"No stored natal chart for {person_dict.get('name')}")
                 return
             svg = self._table_renderer.render_natal_table(chart)
+            self._natal_table_chart = chart
             self._display_svg(svg, self._natal_table_picture)
             self._status_bar.set_info(f"Natal table for {person_dict.get('name')} — LiberZodiac glyphs")
         except Exception as exc:
@@ -714,6 +882,7 @@ class MainWindow(Gtk.ApplicationWindow):
             svg = self._renderer.render_transit(
                 natal_data, transit_data, aspect_mode=aspect_mode
             )
+            self._last_wheel_svg = svg
             self._display_svg(svg, self._transit_picture)
             loc = f" @ {lat_text},{lon_text}" if lat_text and lon_text else ""
             self._status_bar.set_info(
@@ -745,6 +914,12 @@ class MainWindow(Gtk.ApplicationWindow):
                 natal_bodies=natal_chart.get("bodies", []),
                 natal_houses=natal_chart.get("houses", []),
             )
+            self._transit_grid_data = {
+                "active": active,
+                "transit_bodies": transit.get("bodies", []),
+                "natal_bodies": natal_chart.get("bodies", []),
+                "natal_houses": natal_chart.get("houses", []),
+            }
             self._transit_grid_scroll.set_child(view)
             self._status_bar.set_info(
                 f"Transit grid for {person.get('name')} on {date} — {len(active)} transits, sorted by priority"
@@ -769,6 +944,7 @@ class MainWindow(Gtk.ApplicationWindow):
             impact = self._client.period_impact(chart_id, date, orb_days=7)
             active = impact.get("impact", {}).get("active_transits", [])
             rows = planet_relative_values(active, natal_chart, transit)
+            self._by_planet_rows = rows
             view = build_planet_agg_table(rows)
             self._by_planet_scroll.set_child(view)
             self._status_bar.set_info(
@@ -803,6 +979,7 @@ class MainWindow(Gtk.ApplicationWindow):
             svg = self._renderer.render_synastry(
                 a_data, b_data, result.get("cross_aspects", [])
             )
+            self._last_wheel_svg = svg
             self._display_svg(svg, self._synastry_picture)
             count = len(result.get("cross_aspects", []))
             self._status_bar.set_info(
@@ -810,6 +987,125 @@ class MainWindow(Gtk.ApplicationWindow):
             )
         except Exception as exc:
             self._status_bar.set_info(f"Synastry error: {exc}")
+
+    # ------------------------------------------------------------------
+    # Export (item 33: Save button)
+    # ------------------------------------------------------------------
+    def _export_current(self):
+        """Export the currently displayed chart.
+
+        Wheel tabs (Natal/Transit/Synastry) rasterize the last-rendered
+        SVG to PNG via Gdk.Texture. Table tabs (Natal Table / Transit
+        Grid / By Planet) write a UTF-16 CSV with the real Unicode glyph
+        characters. Uses an async Gtk.FileDialog.save() so the main loop
+        is never blocked; cancelling is a no-op.
+        """
+        page = self._notebook.get_current_page()
+        if page in (self.PAGE_NATAL_WHEEL, self.PAGE_TRANSIT_WHEEL, self.PAGE_SYNASTRY_WHEEL):
+            svg = getattr(self, "_last_wheel_svg", None)
+            if not svg:
+                self._status_bar.set_info("Nothing to export — render a wheel first")
+                return
+            default = f"{_safe_name(self._tab_default_name(page))}_{_safe_name(self._person_name())}.png"
+            self._pick_save_path(default, [("PNG image", "image/png", "*.png")],
+                                 self._on_png_dialog_result, svg)
+        elif page == self.PAGE_NATAL_TABLE:
+            chart = getattr(self, "_natal_table_chart", None)
+            if chart is None:
+                self._status_bar.set_info("Nothing to export — render the natal table first")
+                return
+            default = f"natal_{_safe_name(self._person_name())}.csv"
+            self._pick_save_path(default, [("CSV", "text/csv", "*.csv")],
+                                 self._on_csv_dialog_result,
+                                 NATAL_CSV_COLUMNS, natal_csv_rows(chart))
+        elif page == self.PAGE_TRANSIT_GRID:
+            data = getattr(self, "_transit_grid_data", None)
+            if not data or not data.get("active"):
+                self._status_bar.set_info("Nothing to export — render the transit grid first")
+                return
+            default = f"transit_grid_{_safe_name(self._person_name())}_{self._transit_date.get_text()}.csv"
+            self._pick_save_path(default, [("CSV", "text/csv", "*.csv")],
+                                 self._on_csv_dialog_result,
+                                 TRANSIT_GRID_CSV_COLUMNS, transit_grid_csv_rows(data))
+        elif page == self.PAGE_BY_PLANET:
+            rows = getattr(self, "_by_planet_rows", None)
+            if not rows:
+                self._status_bar.set_info("Nothing to export — render By Planet first")
+                return
+            default = f"by_planet_{_safe_name(self._person_name())}_{self._transit_date.get_text()}.csv"
+            self._pick_save_path(default, [("CSV", "text/csv", "*.csv")],
+                                 self._on_csv_dialog_result,
+                                 BY_PLANET_CSV_COLUMNS, by_planet_csv_rows(rows))
+        else:
+            self._status_bar.set_info("Nothing to export on this tab")
+
+    def _tab_default_name(self, page: int) -> str:
+        """Human-readable name for a wheel page (used in the PNG default name)."""
+        if page == self.PAGE_NATAL_WHEEL:
+            return "natal"
+        if page == self.PAGE_TRANSIT_WHEEL:
+            return "transit"
+        if page == self.PAGE_SYNASTRY_WHEEL:
+            return "synastry"
+        return "wheel"
+
+    def _person_name(self) -> str:
+        person = self._selected_person or self._person_selector.get_selected_person()
+        return person.get("name", "person") if person else "person"
+
+    def _pick_save_path(self, default_name: str, filter_specs, callback, *payload):
+        """Show the async GTK save dialog and route the result to `callback`."""
+        dialog = Gtk.FileDialog()
+        dialog.set_initial_name(default_name)
+        filter_list = Gio.ListStore.new(Gtk.FileFilter)
+        for name, mime, pattern in filter_specs:
+            filt = Gtk.FileFilter()
+            filt.set_name(name)
+            filt.add_mime_type(mime)
+            filt.add_pattern(pattern)
+            filter_list.append(filt)
+        dialog.set_filters(filter_list)
+        dialog.set_default_filter(filter_list.get_item(0))
+        dialog.save(self, None, self._on_dialog_result, (callback, payload))
+
+    def _on_dialog_result(self, dialog, result, user_data):
+        """Common async callback: close the dialog and dispatch by kind."""
+        callback, payload = user_data
+        try:
+            file = dialog.save_finish(result)
+        except GLib.Error as err:
+            # Cancelled (dismissed) is silent; the error enum isn't
+            # introspected on this GTK build, so match the known quark.
+            if err.domain == "gtk-file-dialog-error-quark" and err.code == 1:
+                return
+            self._status_bar.set_info(f"Export error: {err.message}")
+            return
+        try:
+            callback(str(file.get_path()), payload)
+        except Exception as exc:
+            self._status_bar.set_info(f"Export error: {exc}")
+
+    def _on_png_dialog_result(self, path, payload):
+        svg = payload
+        import tempfile, os
+        fd, tmp_svg = tempfile.mkstemp(suffix=".svg")
+        try:
+            with open(tmp_svg, "w", encoding="utf-8") as f:
+                f.write(svg)
+            texture = Gdk.Texture.new_from_filename(tmp_svg)
+            ok = texture.save_to_png(path)
+            if ok:
+                self._status_bar.set_info(f"Exported PNG: {path}")
+            else:
+                self._status_bar.set_info(f"PNG export failed: {path}")
+        finally:
+            os.close(fd)
+            os.unlink(tmp_svg)
+
+    def _on_csv_dialog_result(self, path, payload):
+        columns, rows = payload
+        write_csv_utf16(path, columns, rows)
+        self._status_bar.set_info(f"Exported CSV: {path}")
 
     # ------------------------------------------------------------------
     # Public accessors
