@@ -138,13 +138,27 @@ def _transit_hotspots():
     kinds = {h.kind for h in hs}
     assert "planet" in kinds and "aspect" in kinds and "sign" in kinds
     # Transit Saturn sits at the same longitude as natal Sun — both planets
-    # are candidates; the closer one (by distance) wins.
-    sat = next(h for h in hs if h.kind == "planet" and h.label == "Saturn")
+    # are candidates. The transit (outer ring) planet must WIN the hover:
+    # the two rings are only 27px apart with 16px hit circles, so the
+    # conjunct pair overlaps (2026-08-24 bug: hovering a transiting planet
+    # showed natal info).
+    sat = next(h for h in hs if h.kind == "planet" and h.label == "Saturn"
+               and h.data.get("color") == "#ffd43b")
     hits = hit_test(sat.x, sat.y, hs)
-    assert hits and hits[0].label in ("Saturn", "Sun")
+    assert hits and hits[0].label == "Saturn", f"transit planet lost: {[h.label for h in hits[:2]]}"
+    assert hits[0].data.get("color") == "#ffd43b", "transit hotspot should win"
+    # Midway into the overlap band between the conjunct pair, the transit
+    # planet must STILL win.
+    import math
+    sun = next(h for h in hs if h.kind == "planet" and h.label == "Sun"
+               and h.data.get("color") == "#ffffff")
+    mx, my = (sat.x + sun.x) / 2.0, (sat.y + sun.y) / 2.0
+    hits_mid = hit_test(mx, my, hs)
+    assert hits_mid and hits_mid[0].label == "Saturn", \
+        f"overlap band picked natal: {[h.label for h in hits_mid[:2]]}"
 
 
-check("hit_test: transit hotspots include transit + natal planets", _transit_hotspots)
+check("hit_test: transit planet wins over conjunct natal in overlap", _transit_hotspots)
 
 
 def _synastry_hotspots():

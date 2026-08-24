@@ -78,7 +78,7 @@ def _seg_dist(px: float, py: float, x1: float, y1: float,
 
 def _planet_hotspots(bodies: List[Dict], ascendant: float, cx: float, cy: float,
                      r_planet: float, r_aspect: float, color: str = "#ffffff",
-                     kind: str = "planet") -> List[Hotspot]:
+                     kind: str = "planet", priority: int = 4) -> List[Hotspot]:
     out = []
     for b in bodies:
         lon = float(b.get("longitude", 0.0))
@@ -87,7 +87,7 @@ def _planet_hotspots(bodies: List[Dict], ascendant: float, cx: float, cy: float,
         xa, ya = _polar(cx, cy, r_aspect, a)
         name = b.get("name", "?")
         out.append(Hotspot(
-            kind=kind, label=name, x=xg, y=yg, priority=4,
+            kind=kind, label=name, x=xg, y=yg, priority=priority,
             data={"body": name, "longitude": lon, "color": color,
                   "dot_x": xa, "dot_y": ya},
         ))
@@ -219,12 +219,17 @@ def build_transit_hotspots(natal: Dict, transit: Dict, cx: float = 300.0,
     transit_lookup = {b["name"]: b["longitude"] for b in transit_bodies}
 
     out = []
-    # Natal planets (inner ring) + transit planets (outer ring)
+    # Natal planets (inner ring) + transit planets (outer ring).
+    # Transit planets get HIGHER priority than natal planets: the two
+    # rings are only 27px apart with 16px hit circles, so a conjunct
+    # transit/natal pair overlaps — the outer ring should win the hover
+    # (2026-08-24: hovering a transiting planet showed natal info).
     out.extend(_planet_hotspots(natal_bodies, ascendant, cx, cy,
-                                R_PLANET_NATAL, R_ASPECT_NATAL, color="#ffffff"))
+                                R_PLANET_NATAL, R_ASPECT_NATAL, color="#ffffff",
+                                priority=4))
     out.extend(_planet_hotspots(transit_bodies, ascendant, cx, cy,
                                 R_PLANET_TRANSIT, R_ASPECT_NATAL, color="#ffd43b",
-                                kind="planet"))
+                                kind="planet", priority=5))
     # Cross aspects (transit-natal) on the aspect ring
     out.extend(_aspect_hotspots(cross, {**transit_lookup, **natal_lookup},
                                 ascendant, cx, cy, R_ASPECT_NATAL))
@@ -246,10 +251,14 @@ def build_synastry_hotspots(chart_a: Dict, chart_b: Dict, cross: List[Dict],
     lookup_b = {b["name"]: b["longitude"] for b in bodies_b}
 
     out = []
+    # Person A (inner) vs person B (outer) — same overlap concern as the
+    # transit wheel, so B wins the hover on a conjunct pair.
     out.extend(_planet_hotspots(bodies_a, ascendant, cx, cy,
-                                R_PLANET_SYNASTRY_A, R_ASPECT_SYNASTRY, color="#ffffff"))
+                                R_PLANET_SYNASTRY_A, R_ASPECT_SYNASTRY, color="#ffffff",
+                                priority=4))
     out.extend(_planet_hotspots(bodies_b, ascendant, cx, cy,
-                                R_PLANET_SYNASTRY_B, R_ASPECT_SYNASTRY, color="#ffd43b"))
+                                R_PLANET_SYNASTRY_B, R_ASPECT_SYNASTRY, color="#ffd43b",
+                                priority=5))
     out.extend(_aspect_hotspots(cross, {**lookup_a, **lookup_b},
                                 ascendant, cx, cy, R_ASPECT_SYNASTRY))
     out.extend(_sign_hotspots(ascendant, cx, cy))
