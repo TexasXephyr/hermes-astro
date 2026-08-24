@@ -45,8 +45,7 @@ def main():
 
     # 5. Assertions
     assert file_size > 1024, "SVG file too small"
-    assert "☉" in svg, "Missing Sun glyph"
-    assert "☽" in svg, "Missing Moon glyph"
+    assert "<path" in svg, "Missing glyph paths"
     assert "<line" in svg, "Missing aspect line elements"
     assert "<circle" in svg, "Missing circle elements"
     assert "<polygon" in svg, "Missing house polygon elements"

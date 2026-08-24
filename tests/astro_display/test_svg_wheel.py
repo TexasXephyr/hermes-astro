@@ -80,8 +80,8 @@ def test_render_natal_returns_valid_svg(renderer):
     # Spot-check expected elements exist
     assert "LiberZodiac" in svg
     assert "file://" in svg
-    assert "☉" in svg  # Sun glyph
-    assert "☽" in svg  # Moon glyph
+    # Glyphs are inline <path> outlines, not text (no font fallback)
+    assert "<path" in svg
     assert "#69db7c" in svg  # sextile color
 
 
@@ -98,7 +98,7 @@ def test_render_natal_asc_mc_labels_present(renderer):
 
 
 def test_render_natal_south_node_glyph(renderer):
-    """South Node renders as the ☋ glyph, not a capital S fallback."""
+    """South Node renders as a path glyph, not a capital S fallback."""
     chart = {
         "angles": {"ascendant": 0.0},
         "houses": SAMPLE_HOUSES,
@@ -108,8 +108,27 @@ def test_render_natal_south_node_glyph(renderer):
         "aspects": [],
     }
     svg = renderer.render_natal(chart)
-    assert "☋" in svg
-    assert "<text x=\"\" " not in svg  # no empty glyph fallback
+    assert "<path" in svg  # glyph rendered as outline
+    # The body glyph must NOT be a text element (degree labels/Asc/MC are text,
+    # but a body fallback as plain text like "S" would be a bug)
+    import re
+    body_text = re.findall(r'<text[^>]*>([^<]*)</text>', svg)
+    assert "S" not in body_text, "South Node must not fall back to a text 'S'"
+
+
+def test_render_natal_all_zodiac_glyphs_paths(renderer):
+    """All 12 zodiac signs are emitted as inline paths (no emoji fallback)."""
+    chart = {
+        "angles": {"ascendant": 0.0},
+        "houses": SAMPLE_HOUSES,
+        "bodies": [],
+        "aspects": [],
+    }
+    svg = renderer.render_natal(chart)
+    assert svg.count("<path") >= 12
+    # No emoji fallback: the SVGs must not contain colorful emoji chars
+    for emoji in ("\U0001F7E0", "\U0001F7E1", "\U0001F7E2", "\U0001F7E3"):
+        assert emoji not in svg
 
 
 def test_render_natal_no_clipped_signs(renderer):
@@ -156,7 +175,34 @@ def test_render_transit_returns_valid_svg(renderer):
     svg = renderer.render_transit(natal, transit)
     root = ET.fromstring(svg)
     assert root.tag == "{http://www.w3.org/2000/svg}svg"
-    assert "(T)" in svg
+    assert "(T)" not in svg  # transit suffix removed (review item 9)
+
+
+def test_render_transit_retrograde_subscript_right(renderer):
+    """Retrograde mark sits to the RIGHT-BELOW of the planet glyph."""
+    natal = {
+        "angles": {"ascendant": 0.0},
+        "houses": SAMPLE_HOUSES,
+        "bodies": SAMPLE_BODIES,
+        "aspects": [],
+    }
+    transit = {
+        "bodies": [
+            {"name": "Saturn", "longitude": 0.0, "sign_degree": 0.0, "retrograde": True},
+        ],
+    }
+    svg = renderer.render_transit(natal, transit)
+    assert "\u211E" in svg  # retrograde mark present
+    # Find planet glyph x and retro x — retro must be to the right
+    import re
+    # Transit planet at R_planet=252, display 0 -> x = cx - r = 300-252 = 48
+    retro_m = re.search(r'<text x="([0-9.]+)" y="([0-9.]+)"[^>]*>\u211E</text>', svg)
+    assert retro_m is not None
+    retro_x = float(retro_m.group(1))
+    retro_y = float(retro_m.group(2))
+    # planet glyph centered at (48, 300); retro right+below means x > 48 and y > 300
+    assert retro_x > 48.0, "retrograde should be to the right of the planet"
+    assert retro_y > 300.0, "retrograde should be below the planet (subscript)"
 
 
 def test_render_synastry_returns_valid_svg(renderer):
@@ -178,7 +224,7 @@ def test_render_synastry_returns_valid_svg(renderer):
     svg = renderer.render_synastry(chart_a, chart_b, cross_aspects)
     root = ET.fromstring(svg)
     assert root.tag == "{http://www.w3.org/2000/svg}svg"
-    assert "(B)" in svg
+    assert "(B)" not in svg  # suffix removed, consistent with transit
     assert "#4dabf7" in svg  # trine color
 
 
