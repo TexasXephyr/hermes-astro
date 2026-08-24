@@ -16,9 +16,8 @@ from astro_api_client import AstroClient
 from astro_analyze.scoring import planet_relative_values
 from astro_gui.widgets.person_selector import PersonSelector
 from astro_gui.widgets.status_bar import StatusBar
-from astro_display import WheelRenderer
+from astro_display import WheelRenderer, TableRenderer
 from astro_gui.renderers.table_renderer import (
-    build_planet_table,
     build_transit_grid,
     build_planet_agg_table,
 )
@@ -44,6 +43,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self._client = AstroClient()  # library backend, no server needed
         self._renderer = WheelRenderer(width=600, height=600)
+        self._table_renderer = TableRenderer()
         self._selected_person = None
         self._all_people = []
 
@@ -231,9 +231,7 @@ class MainWindow(Gtk.ApplicationWindow):
         notebook.append_page(self._synastry_scroll, Gtk.Label(label="Synastry Wheel"))
 
         # --- Tab 4: Natal Table ---
-        self._natal_table_scroll = Gtk.ScrolledWindow()
-        self._natal_table_scroll.set_hexpand(True)
-        self._natal_table_scroll.set_vexpand(True)
+        self._natal_table_scroll, self._natal_table_picture = self._make_wheel_view()
         notebook.append_page(self._natal_table_scroll, Gtk.Label(label="Natal Table"))
 
         # --- Tab 5: Transit Grid ---
@@ -375,6 +373,7 @@ class MainWindow(Gtk.ApplicationWindow):
         name = person_dict.get("name", "Unknown")
         self._status_bar.set_info(f"Loading chart for {name}...")
         self._load_natal_chart(person_dict)
+        self._load_natal_table(person_dict)
         # Prefill transit lat/lon from the natal chart's location
         chart = self._get_chart(person_dict)
         if chart is not None:
@@ -423,9 +422,9 @@ class MainWindow(Gtk.ApplicationWindow):
             if chart is None:
                 self._status_bar.set_info(f"No stored natal chart for {person_dict.get('name')}")
                 return
-            view = build_planet_table(chart)
-            self._natal_table_scroll.set_child(view)
-            self._status_bar.set_info(f"Natal table for {person_dict.get('name')} — click headers to sort")
+            svg = self._table_renderer.render_natal_table(chart)
+            self._display_svg(svg, self._natal_table_picture)
+            self._status_bar.set_info(f"Natal table for {person_dict.get('name')} — LiberZodiac glyphs")
         except Exception as exc:
             self._status_bar.set_info(f"Table error: {exc}")
 

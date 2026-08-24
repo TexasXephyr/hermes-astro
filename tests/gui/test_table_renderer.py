@@ -31,14 +31,34 @@ def check(label, expr):
 # 1. Natal planet table
 chart = {
     "bodies": [
-        {"name": "Sun", "longitude": 248.7, "sign_name": "Sagittarius",
-         "house": 5, "speed": 1.01, "retrograde": False},
-        {"name": "Moon", "longitude": 147.3, "sign_name": "Leo",
-         "house": 2, "speed": 12.1, "retrograde": False},
+        {"name": "Sun", "longitude": 248.7, "sign_name": "Leo",
+         "sign_degree": 8.7, "house": 5, "speed": 1.01, "retrograde": False},
+        {"name": "Moon", "longitude": 147.3, "sign_name": "Taurus",
+         "sign_degree": 3.5, "house": 2, "speed": 12.1, "retrograde": False},
     ]
 }
 check("build_planet_table returns ColumnView",
       lambda: isinstance(build_planet_table(chart), Gtk.ColumnView))
+
+# 1b. Dignity column is populated (review item 19)
+def _dignity_populated():
+    view = build_planet_table(chart)
+    model = view.get_model()
+    assert model is not None
+    # Walk the sort model -> selection -> rows
+    selection = model
+    n = selection.get_n_items()
+    assert n == 2, f"expected 2 rows, got {n}"
+    labels = []
+    for i in range(n):
+        row = selection.get_item(i)
+        labels.append(row.dignity)
+    # Sun in Leo -> domicile; Moon in Taurus @3.5° -> exaltation
+    assert "domicile" in labels, f"Sun dignity missing: {labels}"
+    assert "exaltation" in labels, f"Moon dignity missing: {labels}"
+
+
+check("planet table dignity column populated", _dignity_populated)
 
 # 2. Transit grid
 transits = [

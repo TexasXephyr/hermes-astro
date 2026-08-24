@@ -17,6 +17,7 @@ from gi.repository import Gtk, GObject, Gio, Pango
 
 from astro_text.symbols import symbol_for_body, symbol_for_aspect
 from astro_text.format import format_longitude
+from astro_text.dignity import get_dignity
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +168,13 @@ def build_planet_table(chart: dict) -> Gtk.Widget:
         sign = b.get("sign_name", "?")
         deg = format_longitude(b.get("longitude", 0.0))
         house = str(b.get("house", "-"))
-        dignity = b.get("dignity", {}).get("label", "") if isinstance(b.get("dignity"), dict) else ""
+        dignity = ""
+        try:
+            dignity = get_dignity(
+                name, sign, sign_degree=b.get("sign_degree", 0.0)
+            )["label"]
+        except Exception:
+            dignity = ""
         speed = f"{b.get('speed', 0.0):.3f}"
         retro = "R" if b.get("retrograde") else ""
         rows.append(PlanetRow(
