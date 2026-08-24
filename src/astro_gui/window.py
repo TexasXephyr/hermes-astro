@@ -1068,20 +1068,41 @@ class MainWindow(Gtk.ApplicationWindow):
         dialog.set_default_filter(filter_list.get_item(0))
         dialog.save(self, None, self._on_dialog_result, (callback, payload))
 
+    def _resolve_save_path(self, file) -> str | None:
+        """Return a local filesystem path for a GFile, or None.
+
+        Portal-based Gtk.FileDialog can hand back a GFile with no local
+        path (get_path() -> None). Fall back to the file:// URI and
+        unquote it; anything else is unresolvable.
+        """
+        path = file.get_path()
+        if path:
+            return path
+        uri = file.get_uri()
+        if uri and uri.startswith("file://"):
+            from urllib.parse import unquote
+            return unquote(uri[len("file://"):])
+        return None
+
     def _on_dialog_result(self, dialog, result, user_data):
         """Common async callback: close the dialog and dispatch by kind."""
         callback, payload = user_data
         try:
             file = dialog.save_finish(result)
         except GLib.Error as err:
-            # Cancelled (dismissed) is silent; the error enum isn't
-            # introspected on this GTK build, so match the known quark.
-            if err.domain == "gtk-file-dialog-error-quark" and err.code == 1:
-                return
-            self._status_bar.set_info(f"Export error: {err.message}")
+            # save_finish only fails when the user dismissed/cancelled the
+            # dialog (the actual write happens later in the callback), so
+            # ANY error here is a silent cancel. Never surface it in the
+            # status bar.
+            import sys
+            print(f"Save dialog cancelled: {err.message}", file=sys.stderr)
+            return
+        path = self._resolve_save_path(file)
+        if path is None:
+            self._status_bar.set_info("Could not resolve the chosen path")
             return
         try:
-            callback(str(file.get_path()), payload)
+            callback(path, payload)
         except Exception as exc:
             self._status_bar.set_info(f"Export error: {exc}")
 
@@ -1094,10 +1115,15 @@ class MainWindow(Gtk.ApplicationWindow):
                 f.write(svg)
             texture = Gdk.Texture.new_from_filename(tmp_svg)
             ok = texture.save_to_png(path)
-            if ok:
-                self._status_bar.set_info(f"Exported PNG: {path}")
-            else:
+            if not ok:
                 self._status_bar.set_info(f"PNG export failed: {path}")
+                return
+            if not (os.path.exists(path) and os.path.getsize(path) > 0):
+                self._status_bar.set_info(f"PNG export failed: {path} is empty or missing")
+                return
+            self._status_bar.set_info(f"Exported PNG: {path}")
+        except Exception as exc:
+            self._status_bar.set_info(f"PNG export failed: {exc}")
         finally:
             os.close(fd)
             os.unlink(tmp_svg)
