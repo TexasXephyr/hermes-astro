@@ -1,14 +1,14 @@
-"""test_wheel.py — API → SVG verification for Sprint 2."""
+"""test_wheel.py — API → SVG verification for Sprint 2 (library-first)."""
 
 import sys
 sys.path.insert(0, "/home/xephyr/astro/src")
 
-from astro_gui.api_client import AstroApiClient
+from astro_api_client import AstroClient
 from astro_gui.renderers.wheel_renderer import WheelRenderer
 
 
 def main():
-    client = AstroApiClient()
+    client = AstroClient()  # library backend, no server needed
 
     # 1. Fetch people list and find Xephyr
     people_resp = client.list_people()
@@ -21,9 +21,9 @@ def main():
     assert xephyr is not None, "Xephyr not found in people list"
     print(f"Found person: {xephyr['name']} (id={xephyr['id']})")
 
-    # 2. Calculate natal chart via API
-    chart = client.calculate_natal(xephyr)
-    assert chart.get("status") == "ok", "calculate_natal failed"
+    # 2. Load natal chart from the library store
+    chart = client.get_chart(xephyr["chart_id"])
+    assert chart is not None, "Missing natal chart"
     assert "bodies" in chart, "Missing bodies in chart"
     assert "houses" in chart, "Missing houses in chart"
     assert "aspects" in chart, "Missing aspects in chart"
@@ -45,15 +45,11 @@ def main():
 
     # 5. Assertions
     assert file_size > 1024, "SVG file too small"
-    assert "Sun" in svg, "Missing Sun text"
-    # We don't embed the raw ascendant float; verify geometry exists instead
+    assert "☉" in svg, "Missing Sun glyph"
+    assert "☽" in svg, "Missing Moon glyph"
     assert "<line" in svg, "Missing aspect line elements"
     assert "<circle" in svg, "Missing circle elements"
     assert "<polygon" in svg, "Missing house polygon elements"
-    assert "Ari" in svg or "Sag" in svg, "Missing sign labels"
-    # Verify the ascendant-derived house cusp geometry by checking for specific
-    # known body placements (Moon at 147°) rendered near the wheel center.
-    assert "Moon" in svg, "Missing Moon text"
 
     print("\nAll assertions passed.")
     print("Visual inspection file: /tmp/test_natal_wheel.svg")

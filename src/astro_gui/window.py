@@ -1,4 +1,10 @@
-"""window.py — MainWindow for the astrology GUI."""
+"""window.py — MainWindow for the astrology GUI.
+
+Library-first: uses AstroClient (library backend) so no HTTP server is
+required. Tabs: Natal Wheel, Transit Wheel, Synastry Wheel, Natal Table,
+Transit Grid (priority-sorted), By Planet (relative value aggregation).
+"""
+from __future__ import annotations
 
 import gi
 gi.require_version("Gtk", "4.0")
@@ -6,10 +12,16 @@ from gi.repository import Gtk, GObject, Gdk
 
 from typing import Tuple
 
+from astro_api_client import AstroClient
+from astro_analyze.scoring import planet_relative_values
 from astro_gui.widgets.person_selector import PersonSelector
 from astro_gui.widgets.status_bar import StatusBar
-from astro_gui.api_client import AstroApiClient
 from astro_gui.renderers.wheel_renderer import WheelRenderer
+from astro_gui.renderers.table_renderer import (
+    build_planet_table,
+    build_transit_grid,
+    build_planet_agg_table,
+)
 
 
 class MainWindow(Gtk.ApplicationWindow):
@@ -17,12 +29,20 @@ class MainWindow(Gtk.ApplicationWindow):
 
     __gtype_name__ = "AstroMainWindow"
 
+    # Notebook page indices (sidebar buttons reference these)
+    PAGE_NATAL_WHEEL = 0
+    PAGE_TRANSIT_WHEEL = 1
+    PAGE_SYNASTRY_WHEEL = 2
+    PAGE_NATAL_TABLE = 3
+    PAGE_TRANSIT_GRID = 4
+    PAGE_BY_PLANET = 5
+
     def __init__(self, app=None, **kwargs):
         super().__init__(application=app, **kwargs)
         self.set_title("Astrology Tool")
         self.set_default_size(1200, 800)
 
-        self._client = AstroApiClient()
+        self._client = AstroClient()  # library backend, no server needed
         self._renderer = WheelRenderer(width=600, height=600)
         self._selected_person = None
         self._all_people = []
@@ -32,7 +52,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.set_child(root_box)
 
         # --- Top: Person Selector ---
-        self._person_selector = PersonSelector()
+        self._person_selector = PersonSelector(client=self._client)
         self._person_selector.set_hexpand(True)
         self._person_selector.connect("person-changed", self._on_person_changed)
         root_box.append(self._person_selector)
@@ -44,7 +64,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._paned.set_wide_handle(True)
         root_box.append(self._paned)
 
-        # Left sidebar placeholder
+        # Left sidebar
         sidebar = self._build_sidebar()
         self._paned.set_start_child(sidebar)
         self._paned.set_position(240)
@@ -66,7 +86,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self._on_person_changed(self._person_selector, first_person)
 
     # ------------------------------------------------------------------
-    # Sidebar placeholder
+    # Sidebar
     # ------------------------------------------------------------------
     def _build_sidebar(self) -> Gtk.Box:
         sidebar_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -80,7 +100,6 @@ class MainWindow(Gtk.ApplicationWindow):
         label.set_xalign(0.0)
         sidebar_box.append(label)
 
-        # Placeholder buttons for future navigation controls
         btn_natal = Gtk.Button(label="Natal")
         btn_natal.connect("clicked", lambda _b: self._show_natal_wheel())
         sidebar_box.append(btn_natal)
@@ -93,8 +112,17 @@ class MainWindow(Gtk.ApplicationWindow):
         btn_synastry.connect("clicked", lambda _b: self._show_synastry_wheel())
         sidebar_box.append(btn_synastry)
 
-        btn_horary = Gtk.Button(label="Horary")
-        sidebar_box.append(btn_horary)
+        btn_table = Gtk.Button(label="Table")
+        btn_table.connect("clicked", lambda _b: self._show_natal_table())
+        sidebar_box.append(btn_table)
+
+        btn_grid = Gtk.Button(label="Grid")
+        btn_grid.connect("clicked", lambda _b: self._show_transit_grid())
+        sidebar_box.append(btn_grid)
+
+        btn_by_planet = Gtk.Button(label="By Planet")
+        btn_by_planet.connect("clicked", lambda _b: self._show_by_planet())
+        sidebar_box.append(btn_by_planet)
 
         # Spacer
         spacer = Gtk.Box()
@@ -117,9 +145,6 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # --- Tab 2: Transit Wheel ---
         self._transit_scroll, self._transit_picture = self._make_wheel_view()
-        # Build transit controls overlay (top of scroll)
-        self._transit_scroll.set_child(self._transit_picture)
-        # Controls go above — use a vertical box inside scroll
         transit_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self._transit_scroll.set_child(transit_box)
 
@@ -183,7 +208,25 @@ class MainWindow(Gtk.ApplicationWindow):
 
         notebook.append_page(self._synastry_scroll, Gtk.Label(label="Synastry Wheel"))
 
-        notebook.set_current_page(0)
+        # --- Tab 4: Natal Table ---
+        self._natal_table_scroll = Gtk.ScrolledWindow()
+        self._natal_table_scroll.set_hexpand(True)
+        self._natal_table_scroll.set_vexpand(True)
+        notebook.append_page(self._natal_table_scroll, Gtk.Label(label="Natal Table"))
+
+        # --- Tab 5: Transit Grid ---
+        self._transit_grid_scroll = Gtk.ScrolledWindow()
+        self._transit_grid_scroll.set_hexpand(True)
+        self._transit_grid_scroll.set_vexpand(True)
+        notebook.append_page(self._transit_grid_scroll, Gtk.Label(label="Transit Grid"))
+
+        # --- Tab 6: By Planet ---
+        self._by_planet_scroll = Gtk.ScrolledWindow()
+        self._by_planet_scroll.set_hexpand(True)
+        self._by_planet_scroll.set_vexpand(True)
+        notebook.append_page(self._by_planet_scroll, Gtk.Label(label="By Planet"))
+
+        notebook.set_current_page(self.PAGE_NATAL_WHEEL)
         return notebook
 
     def _make_wheel_view(self) -> Tuple[Gtk.ScrolledWindow, Gtk.Picture]:
@@ -222,19 +265,17 @@ class MainWindow(Gtk.ApplicationWindow):
         if not person_a:
             self._status_bar.set_info("No Person A selected")
             return
-        # Get selected person B from dropdown
         selected = self._synastry_dropdown.get_selected_item()
         if not selected:
             self._status_bar.set_info("Select Person B")
             return
-        # The dropdown items are GObject strings; get string value
         person_b_name = selected.get_string()
-        # Find matching person dict
         for p in self._all_people:
             if p.get("name") == person_b_name:
                 self._load_synastry_chart(person_a, p)
                 return
         self._status_bar.set_info(f"Person B '{person_b_name}' not found")
+
     # ------------------------------------------------------------------
     # Chart loading
     # ------------------------------------------------------------------
@@ -256,34 +297,49 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _show_natal_wheel(self):
         """Switch to the Natal Wheel tab and refresh."""
-        self._notebook.set_current_page(0)
+        self._notebook.set_current_page(self.PAGE_NATAL_WHEEL)
         person = self._person_selector.get_selected_person()
         if person:
             self._load_natal_chart(person)
 
     def _show_transit_wheel(self):
         """Switch to the Transit Wheel tab and refresh."""
-        self._notebook.set_current_page(1)
+        self._notebook.set_current_page(self.PAGE_TRANSIT_WHEEL)
         self._refresh_transit()
 
     def _show_synastry_wheel(self):
         """Switch to the Synastry Wheel tab."""
-        self._notebook.set_current_page(2)
+        self._notebook.set_current_page(self.PAGE_SYNASTRY_WHEEL)
+
+    def _show_natal_table(self):
+        """Switch to the Natal Table tab and refresh."""
+        self._notebook.set_current_page(self.PAGE_NATAL_TABLE)
+        person = self._person_selector.get_selected_person()
+        if person:
+            self._load_natal_table(person)
+
+    def _show_transit_grid(self):
+        """Switch to the Transit Grid tab and refresh."""
+        self._notebook.set_current_page(self.PAGE_TRANSIT_GRID)
+        self._refresh_transit_grid()
+
+    def _show_by_planet(self):
+        """Switch to the By Planet tab and refresh."""
+        self._notebook.set_current_page(self.PAGE_BY_PLANET)
+        self._refresh_by_planet()
 
     # ------------------------------------------------------------------
     # Person list management
     # ------------------------------------------------------------------
     def _fetch_all_people(self):
-        """Populate _all_people and synastry dropdown from API."""
+        """Populate _all_people and synastry dropdown from the store."""
         try:
             result = self._client.list_people()
             if result.get("status") == "ok":
                 self._all_people = result.get("people", [])
                 names = [p.get("name", "?") for p in self._all_people]
-                str_list = GObject.Value(GObject.TYPE_OBJECT, None)
                 model = Gtk.StringList.new(names)
                 self._synastry_dropdown.set_model(model)
-                # Select second person by default if available
                 if len(names) > 1:
                     self._synastry_dropdown.set_selected(1)
         except Exception as exc:
@@ -297,19 +353,27 @@ class MainWindow(Gtk.ApplicationWindow):
         name = person_dict.get("name", "Unknown")
         self._status_bar.set_info(f"Loading chart for {name}...")
         self._load_natal_chart(person_dict)
-        # Also refresh synastry dropdown index to avoid self-comparison
         for i, p in enumerate(self._all_people):
             if p.get("id") == person_dict.get("id"):
-                # Pick next person as default B if available
                 next_idx = (i + 1) % len(self._all_people) if len(self._all_people) > 1 else 0
                 self._synastry_dropdown.set_selected(next_idx)
                 break
 
+    def _get_chart(self, person_dict) -> dict | None:
+        """Return the stored natal chart for a person, or None."""
+        chart_id = person_dict.get("chart_id")
+        if not chart_id:
+            return None
+        try:
+            return self._client.get_chart(chart_id)
+        except Exception:
+            return None
+
     def _load_natal_chart(self, person_dict):
         try:
-            chart = self._client.calculate_natal(person_dict)
-            if chart.get("status") != "ok":
-                self._status_bar.set_info(f"Error: {chart.get('message', 'Unknown')}")
+            chart = self._get_chart(person_dict)
+            if chart is None:
+                self._status_bar.set_info(f"No stored natal chart for {person_dict.get('name')}")
                 return
             svg = self._renderer.render_natal(chart, scale=1.0)
             self._display_svg(svg, self._natal_picture)
@@ -323,60 +387,118 @@ class MainWindow(Gtk.ApplicationWindow):
         except Exception as exc:
             self._status_bar.set_info(f"Chart error: {exc}")
 
+    def _load_natal_table(self, person_dict):
+        try:
+            chart = self._get_chart(person_dict)
+            if chart is None:
+                self._status_bar.set_info(f"No stored natal chart for {person_dict.get('name')}")
+                return
+            view = build_planet_table(chart)
+            self._natal_table_scroll.set_child(view)
+            self._status_bar.set_info(f"Natal table for {person_dict.get('name')} — click headers to sort")
+        except Exception as exc:
+            self._status_bar.set_info(f"Table error: {exc}")
+
     def _load_transit_chart(self, person_dict):
         """Fetch transit data and render two-ring transit wheel."""
         try:
-            pid = person_dict.get("id")
-            natal_chart = self._client.get_natal_chart_for_person(pid)
-            if not natal_chart:
-                self._status_bar.set_info(f"No persisted natal chart for {person_dict.get('name')}")
+            natal_chart = self._get_chart(person_dict)
+            if natal_chart is None:
+                self._status_bar.set_info(f"No stored natal chart for {person_dict.get('name')}")
                 return
-            chart_id = natal_chart.get("chart_id")
+            chart_id = person_dict.get("chart_id")
             date = self._transit_date.get_text()
             time = self._transit_time.get_text()
-            result = self._client.get_transit(chart_id, date, time)
+            result = self._client.transit(chart_id, date, time)
             if result.get("status") != "ok":
                 self._status_bar.set_info(f"Transit error: {result.get('message', 'Unknown')}")
                 return
-            # Build natal + transit merged chart for renderer
             natal_data = {
-                "angles": natal_chart.get("positions", {}).get("angles", {}),
-                "houses": natal_chart.get("positions", {}).get("houses", []),
-                "bodies": result.get("bodies", []),
+                "angles": natal_chart.get("angles", {}),
+                "houses": natal_chart.get("houses", []),
+                "bodies": natal_chart.get("bodies", []),
                 "aspects": natal_chart.get("aspects", []),
             }
-            transit_data = {"bodies": result.get("transiting_bodies", [])}
+            transit_data = {"bodies": result.get("bodies", [])}
             svg = self._renderer.render_transit(natal_data, transit_data)
             self._display_svg(svg, self._transit_picture)
-            count = len(result.get("cross_aspects", []))
             self._status_bar.set_info(
-                f"Transit for {person_dict.get('name')} on {date} {time} — {count} cross aspects"
+                f"Transit for {person_dict.get('name')} on {date} {time}"
             )
         except Exception as exc:
             self._status_bar.set_info(f"Transit error: {exc}")
 
+    def _refresh_transit_grid(self):
+        person = self._selected_person
+        if not person:
+            self._status_bar.set_info("No person selected")
+            return
+        try:
+            natal_chart = self._get_chart(person)
+            if natal_chart is None:
+                self._status_bar.set_info(f"No stored natal chart for {person.get('name')}")
+                return
+            chart_id = person.get("chart_id")
+            date = self._transit_date.get_text()
+            time = self._transit_time.get_text()
+            transit = self._client.transit(chart_id, date, time)
+            impact = self._client.period_impact(chart_id, date, orb_days=7)
+            active = impact.get("impact", {}).get("active_transits", [])
+            view = build_transit_grid(active)
+            self._transit_grid_scroll.set_child(view)
+            self._status_bar.set_info(
+                f"Transit grid for {person.get('name')} on {date} — {len(active)} transits, sorted by priority"
+            )
+        except Exception as exc:
+            self._status_bar.set_info(f"Grid error: {exc}")
+
+    def _refresh_by_planet(self):
+        person = self._selected_person
+        if not person:
+            self._status_bar.set_info("No person selected")
+            return
+        try:
+            natal_chart = self._get_chart(person)
+            if natal_chart is None:
+                self._status_bar.set_info(f"No stored natal chart for {person.get('name')}")
+                return
+            chart_id = person.get("chart_id")
+            date = self._transit_date.get_text()
+            time = self._transit_time.get_text()
+            transit = self._client.transit(chart_id, date, time)
+            impact = self._client.period_impact(chart_id, date, orb_days=7)
+            active = impact.get("impact", {}).get("active_transits", [])
+            rows = planet_relative_values(active, natal_chart, transit)
+            view = build_planet_agg_table(rows)
+            self._by_planet_scroll.set_child(view)
+            self._status_bar.set_info(
+                f"By planet for {person.get('name')} on {date} — {len(rows)} planets by relative value"
+            )
+        except Exception as exc:
+            self._status_bar.set_info(f"By-planet error: {exc}")
+
     def _load_synastry_chart(self, person_a, person_b):
         """Fetch synastry data and render two-ring synastry wheel."""
         try:
-            chart_a = self._client.get_natal_chart_for_person(person_a.get("id"))
-            chart_b = self._client.get_natal_chart_for_person(person_b.get("id"))
+            chart_a = self._get_chart(person_a)
+            chart_b = self._get_chart(person_b)
             if not chart_a or not chart_b:
                 missing = "A" if not chart_a else "B"
-                self._status_bar.set_info(f"No persisted natal chart for person {missing}")
+                self._status_bar.set_info(f"No stored natal chart for person {missing}")
                 return
-            result = self._client.get_synastry(
-                chart_a.get("chart_id"), chart_b.get("chart_id")
+            result = self._client.synastry(
+                person_a.get("chart_id"), person_b.get("chart_id")
             )
             if result.get("status") != "ok":
                 self._status_bar.set_info(f"Synastry error: {result.get('message', 'Unknown')}")
                 return
             a_data = {
-                "angles": chart_a.get("positions", {}).get("angles", {}),
-                "houses": chart_a.get("positions", {}).get("houses", []),
-                "bodies": chart_a.get("positions", {}).get("bodies", []),
+                "angles": chart_a.get("angles", {}),
+                "houses": chart_a.get("houses", []),
+                "bodies": chart_a.get("bodies", []),
             }
             b_data = {
-                "bodies": chart_b.get("positions", {}).get("bodies", []),
+                "bodies": chart_b.get("bodies", []),
             }
             svg = self._renderer.render_synastry(
                 a_data, b_data, result.get("cross_aspects", [])

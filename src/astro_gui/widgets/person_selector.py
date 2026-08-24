@@ -16,7 +16,7 @@ class PersonSelector(Gtk.Box):
 
     __gtype_name__ = "AstroPersonSelector"
 
-    def __init__(self, client: AstroApiClient = None, **kwargs):
+    def __init__(self, client=None, **kwargs):
         super().__init__(**kwargs)
         self.set_orientation(Gtk.Orientation.HORIZONTAL)
         self.set_spacing(12)
@@ -26,6 +26,8 @@ class PersonSelector(Gtk.Box):
         self.set_margin_bottom(6)
         self.set_hexpand(True)
 
+        # Accept either the HTTP AstroApiClient or the library AstroClient;
+        # both expose list_people() with the same response shape.
         self._client = client or AstroApiClient()
         self._people = []  # list of person dicts
 

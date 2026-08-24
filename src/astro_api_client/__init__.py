@@ -429,6 +429,26 @@ class AstroClient:
             return None
         return {"id": row[0], "name": row[1], "chart_id": row[2]}
 
+    def list_people(self) -> dict:
+        """List all people in the store.
+
+        Returns the same shape as the HTTP backend: {"status": "ok",
+        "people": [{"id", "name", "chart_id"}, ...]} so GUI callers work
+        against either backend.
+        """
+        if self.backend == "http":
+            return list_people(base_url=self.base_url)
+
+        self._init_library_db()
+        db_path = self._get_library_db_path()
+        with sqlite3.connect(str(db_path)) as conn:
+            cur = conn.execute("SELECT id, name, chart_id FROM people ORDER BY name")
+            rows = cur.fetchall()
+        return {
+            "status": "ok",
+            "people": [{"id": r[0], "name": r[1], "chart_id": r[2]} for r in rows],
+        }
+
     def create_person(self, name: str, natal_chart_id: str) -> dict:
         """Create or update a person pointing to an existing natal chart."""
         _validate_uuid(natal_chart_id)
