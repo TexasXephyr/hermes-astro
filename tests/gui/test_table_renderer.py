@@ -361,6 +361,119 @@ agg = [
 check("build_planet_agg_table returns ColumnView",
       lambda: isinstance(build_planet_agg_table(agg), Gtk.ColumnView))
 
+# 3b. Header-button sorting (item 35: explicit Gtk.Button headers)
+def _transit_priority_header_sort():
+    widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
+    view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
+    buttons = getattr(view, "_sort_buttons", None)
+    assert buttons is not None, "transit grid missing _sort_buttons"
+    assert set(buttons) == {
+        "T Body", "T Sign", "T House", "Aspect", "N Body", "N Sign",
+        "N House", "Orb", "Days", "Priority",
+    }, f"header buttons wrong: {sorted(buttons)}"
+    sm = view._sort_model
+    prio = lambda: [sm.get_item(i).sort_priority for i in range(sm.get_n_items())]
+    # Default sort: priority descending
+    assert prio() == [128, 119], f"expected default priority desc, got {prio()}"
+    assert buttons["Priority"].get_label() == "▼ Priority", \
+        f"priority header should show active marker, got {buttons['Priority'].get_label()!r}"
+    # First click inverts (default was already priority desc)
+    buttons["Priority"].emit("clicked")
+    assert prio() == [119, 128], f"expected priority asc after click, got {prio()}"
+    assert buttons["Priority"].get_label() == "▲ Priority", \
+        buttons["Priority"].get_label()
+    # Re-click inverts back
+    buttons["Priority"].emit("clicked")
+    assert prio() == [128, 119], f"expected priority desc after re-click, got {prio()}"
+    assert buttons["Priority"].get_label() == "▼ Priority", \
+        buttons["Priority"].get_label()
+
+
+check("transit grid: Priority header click re-sorts and re-click inverts",
+      _transit_priority_header_sort)
+
+
+def _transit_other_header_sort():
+    widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
+    view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
+    buttons = view._sort_buttons
+    sm = view._sort_model
+    days = lambda: [sm.get_item(i).sort_days for i in range(sm.get_n_items())]
+    # Days is not the default column: first click activates it ascending.
+    buttons["Days"].emit("clicked")
+    assert days() == [0, 1], f"expected days asc after click, got {days()}"
+    assert buttons["Days"].get_label() == "▲ Days", buttons["Days"].get_label()
+    # Previously active column loses its marker
+    assert buttons["Priority"].get_label() == "Priority", \
+        buttons["Priority"].get_label()
+    # Re-click inverts
+    buttons["Days"].emit("clicked")
+    assert days() == [1, 0], f"expected days desc after re-click, got {days()}"
+
+
+check("transit grid: clicking a non-default header activates + inverts",
+      _transit_other_header_sort)
+
+
+def _natal_degree_header_sort():
+    view = build_planet_table(chart)
+    buttons = view._sort_buttons
+    assert set(buttons) == {
+        "Body", "Sign", "Degree", "House", "Dignity", "Speed", "Retro",
+    }, f"natal header buttons wrong: {sorted(buttons)}"
+    sm = view._sort_model
+    deg = lambda: [round(sm.get_item(i).sort_degree, 1)
+                   for i in range(sm.get_n_items())]
+    # Default sort: degree ascending
+    assert deg() == [147.3, 248.7], f"expected default degree asc, got {deg()}"
+    buttons["Degree"].emit("clicked")
+    assert deg() == [248.7, 147.3], f"expected degree desc after click, got {deg()}"
+    assert buttons["Degree"].get_label() == "▼ Degree", buttons["Degree"].get_label()
+    buttons["Degree"].emit("clicked")
+    assert deg() == [147.3, 248.7], f"expected degree asc after re-click, got {deg()}"
+
+
+check("natal table: Degree header click sorts + inverts",
+      _natal_degree_header_sort)
+
+
+def _planet_agg_header_sort():
+    view = build_planet_agg_table(agg)
+    buttons = view._sort_buttons
+    sm = view._sort_model
+    tot = lambda: [sm.get_item(i).sort_total for i in range(sm.get_n_items())]
+    # Default sort: total descending
+    assert tot() == [197, 172], f"expected default total desc, got {tot()}"
+    buttons["Total"].emit("clicked")
+    assert tot() == [172, 197], f"expected total asc after click, got {tot()}"
+    buttons["Total"].emit("clicked")
+    assert tot() == [197, 172], f"expected total desc after re-click, got {tot()}"
+
+
+check("by-planet: Total header click + invert",
+      _planet_agg_header_sort)
+
+
+def _planet_agg_count_header_sort():
+    view = build_planet_agg_table(agg)
+    buttons = view._sort_buttons
+    sm = view._sort_model
+    cnt = lambda: [sm.get_item(i).sort_count for i in range(sm.get_n_items())]
+    # Count sorts by its own field (not total): default total desc = 197,172
+    assert [sm.get_item(i).sort_total for i in range(sm.get_n_items())] == [197, 172]
+    buttons["Count"].emit("clicked")
+    assert cnt() == [4, 5], f"expected count asc after click, got {cnt()}"
+    assert buttons["Count"].get_label() == "▲ Count", \
+        buttons["Count"].get_label()
+    buttons["Count"].emit("clicked")
+    assert cnt() == [5, 4], f"expected count desc after re-click, got {cnt()}"
+    assert buttons["Count"].get_label() == "▼ Count", \
+        buttons["Count"].get_label()
+
+
+check("by-planet: Count header sorts by its own field + inverts",
+      _planet_agg_count_header_sort)
+
 # 4. Empty transit list still builds
 check("build_transit_grid handles empty list",
       lambda: isinstance(build_transit_grid([]), Gtk.Box))

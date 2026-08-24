@@ -7,9 +7,13 @@ Builds Gtk.ColumnView tables (GTK4's modern sortable list) for:
     sign / house)
   - By-planet aggregation: Body, Total, Count, Top Aspect, vs Natal
 
-All views are backed by Gtk.SortListModel so clicking a column header
-sorts the data; re-clicking the same header inverts the order (GTK's
-built-in ColumnView header behavior). The transit grid consumes the
+All views are backed by a Gtk.SortListModel. Column headers are explicit
+Gtk.Buttons (installed through the view's header factory) wired to the
+sort model: clicking a header sorts the model, re-clicking inverts the
+direction, and the button label shows the active direction with a
+▲/▼ prefix. GTK's built-in ColumnView header sorting is NOT used — on
+GTK 4.22 it drives an internal sorter that never reorders the model the
+views consume. The transit grid consumes the
 priority-scored output from astro_analyze.scoring (via
 AstroClient.period_impact) and looks up transit/natal signs from the
 body lists passed in by the caller.
@@ -171,9 +175,10 @@ class PlanetAggRow(GObject.Object):
     top_aspect = GObject.Property(type=str, default="")
     vs_natal = GObject.Property(type=str, default="")
     sort_total = GObject.Property(type=int, default=0)
+    sort_count = GObject.Property(type=int, default=0)
 
     def __init__(self, body="", total="", count="", top_aspect="", vs_natal="",
-                 sort_total=0, **kwargs):
+                 sort_total=0, sort_count=0, **kwargs):
         super().__init__(**kwargs)
         self.body = body
         self.total = total
@@ -181,6 +186,7 @@ class PlanetAggRow(GObject.Object):
         self.top_aspect = top_aspect
         self.vs_natal = vs_natal
         self.sort_total = sort_total
+        self.sort_count = sort_count
 
 
 # ---------------------------------------------------------------------------
@@ -233,12 +239,204 @@ def _string_sorter(item_type, prop: str) -> Gtk.Sorter:
     )
 
 
+def _make_sorter(item_type, prop: str,
+                 descending: bool = False) -> Gtk.Sorter:
+    """Return a sorter over a property, in the given direction.
+
+    Numeric properties (int/float) get a Gtk.NumericSorter (which can be
+    flipped in place with set_sort_order). String properties get a
+    Gtk.CustomSorter because Gtk.StringSorter has no direction setter
+    on this GTK version — the comparator reads the property directly so
+    the same sorter object can serve both directions.
+    """
+    prop_pspec = None
+    try:
+        for ps in item_type.list_properties():
+            if ps.name == prop or ps.name == prop.replace("_", "-"):
+                prop_pspec = ps
+                break
+    except Exception:
+        prop_pspec = None
+    if prop_pspec is None:
+        # Unknown property: fall back to a plain string sorter.
+        return Gtk.StringSorter(
+            expression=Gtk.PropertyExpression.new(item_type, None, prop)
+        )
+    if prop_pspec.value_type in (GObject.TYPE_INT, GObject.TYPE_INT64,
+                                 GObject.TYPE_UINT, GObject.TYPE_UINT64,
+                                 GObject.TYPE_LONG, GObject.TYPE_ULONG,
+                                 GObject.TYPE_FLOAT, GObject.TYPE_DOUBLE):
+        return Gtk.NumericSorter(
+            expression=Gtk.PropertyExpression.new(item_type, None, prop),
+            sort_order=Gtk.SortType.DESCENDING if descending else Gtk.SortType.ASCENDING,
+        )
+
+    state = {"desc": descending}
+
+    def _cmp(a, b, _user=None):
+        av = getattr(a, prop, "")
+        bv = getattr(b, prop, "")
+        if av == bv:
+            return 0
+        r = -1 if av < bv else 1
+        return -r if state["desc"] else r
+
+    sorter = Gtk.CustomSorter.new(_cmp)
+    sorter._direction = state
+    return sorter
+
+
+def _set_sorter_direction(sorter: Gtk.Sorter, descending: bool):
+    """Flip a sorter to ascending/descending (numeric or custom)."""
+    if isinstance(sorter, Gtk.NumericSorter):
+        sorter.set_sort_order(
+            Gtk.SortType.DESCENDING if descending else Gtk.SortType.ASCENDING
+        )
+        return
+    state = getattr(sorter, "_direction", None)
+    if state is not None:
+        state["desc"] = descending
+
+
+def _header_button(label: str) -> Gtk.Button:
+    """A header button; its label shows the sort direction when active."""
+    btn = Gtk.Button()
+    btn.set_label(label)
+    btn.set_focusable(False)
+    return btn
+
+
+def _header_factory(buttons: dict) -> Gtk.SignalListItemFactory:
+    """Factory that renders the explicit header buttons in each column.
+
+    The ColumnView header factory is called once per column with a
+    ListItem whose item is the Gtk.ColumnViewColumn. The matching
+    button (by column title) is stashed on the column object as
+    ``col._sort_button``; `_install_header_factory` copies it into the
+    buttons dict so tests can drive clicks directly.
+    """
+    factory = Gtk.SignalListItemFactory()
+    factory.connect("setup", _header_setup)
+    factory.connect("bind", _header_bind, buttons)
+    return factory
+
+
+def _header_setup(factory, list_item):
+    box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+    box.set_halign(Gtk.Align.START)
+    box.set_spacing(4)
+    list_item.set_child(box)
+
+
+def _header_bind(factory, list_item, buttons: dict):
+    col = list_item.get_item()
+    if not isinstance(col, Gtk.ColumnViewColumn):
+        return
+    btn = getattr(col, "_sort_button", None)
+    if btn is None:
+        return
+    box = list_item.get_child()
+    # Remove any previously-attached child (bind can fire more than once).
+    child = box.get_first_child()
+    while child is not None:
+        nxt = child.get_next_sibling()
+        box.remove(child)
+        child = nxt
+    box.append(btn)
+
+
+def _mark_active(buttons: dict, title: str | None, descending: bool):
+    """Update the header button labels to show the active sort direction."""
+    for t, btn in buttons.items():
+        base = t
+        if getattr(btn, "_base_title", None):
+            base = btn._base_title
+        if t == title:
+            btn.set_label(("▼ " if descending else "▲ ") + base)
+        else:
+            btn.set_label(base)
+
+
+def _sorter_desc(sorter: Gtk.Sorter) -> bool:
+    """Is this sorter currently sorting descending?"""
+    if isinstance(sorter, Gtk.NumericSorter):
+        return sorter.get_sort_order() == Gtk.SortType.DESCENDING
+    state = getattr(sorter, "_direction", None)
+    return bool(state and state["desc"])
+
+
+def _install_header_buttons(view: Gtk.ColumnView,
+                            sort_model: Gtk.SortListModel,
+                            buttons: dict,
+                            sorter_specs: dict,
+                            default_title: str | None = None):
+    """Wire explicit header buttons that sort the view's SortListModel.
+
+    ``buttons`` maps column title -> Gtk.Button (built by the caller with
+    `_header_button`). ``sorter_specs`` maps column title -> sorter object
+    with the column's preferred direction baked in.
+
+    Clicking a header button:
+    - first click on a column activates it with its sorter's baked-in
+      direction (ascending for text, descending for numeric/priority);
+    - re-click on the active column inverts the direction;
+    - the active button's label gets a '▲ '/'▼ ' prefix; the sort model
+      is re-sorted through ``sort_model.set_sorter`` so the visible row
+      order changes immediately (GTK's built-in header sorting is NOT
+      used — on GTK 4.22 it drives an internal sorter that never
+      reorders the model).
+
+    The default sort is applied by the caller (default_title + active
+    direction), so the initial header shows the marker for it.
+    """
+    active = {"title": default_title, "desc": False}
+    if default_title is not None:
+        active["desc"] = _sorter_desc(sorter_specs[default_title])
+        _mark_active(buttons, default_title, active["desc"])
+
+    def _on_clicked(_btn, title, *args):
+        sorter = sorter_specs[title]
+        if active["title"] == title:
+            # Re-click inverts.
+            descending = not _sorter_desc(sorter)
+        else:
+            # New column: keep the sorter's baked-in default direction.
+            descending = _sorter_desc(sorter)
+        _set_sorter_direction(sorter, descending)
+        sort_model.set_sorter(sorter)
+        # Custom (string) sorters hold direction in mutable state and need
+        # an explicit change notification; NumericSorter also re-sorts on
+        # set_sort_order but the notification is harmless and keeps both
+        # paths uniform.
+        sorter.changed(Gtk.SorterChange.DIFFERENT)
+        active["title"] = title
+        active["desc"] = descending
+        _mark_active(buttons, title, descending)
+
+    for title, btn in buttons.items():
+        btn._base_title = title
+        if title in sorter_specs:
+            btn.connect("clicked", _on_clicked, title)
+
+    for col in view.get_columns():
+        btn = buttons.get(col.get_title())
+        if btn is not None:
+            col._sort_button = btn
+
+    view.set_header_factory(_header_factory(buttons))
+
+
 # ---------------------------------------------------------------------------
 # Table builders
 # ---------------------------------------------------------------------------
 
 def build_planet_table(chart: dict) -> Gtk.Widget:
-    """Natal planet table: Body, Sign, Degree, House, Dignity, Speed, Retro."""
+    """Natal planet table: Body, Sign, Degree, House, Dignity, Speed, Retro.
+
+    Column headers are explicit Gtk.Buttons wired to the SortListModel —
+    clicking a header sorts, re-clicking inverts, and the active column's
+    label carries a '▲ '/'▼ ' prefix (default sort: degree ascending).
+    """
     rows = []
     for b in sorted(chart.get("bodies", []), key=lambda x: x.get("longitude", 0.0)):
         name = b.get("name", "?")
@@ -274,16 +472,34 @@ def build_planet_table(chart: dict) -> Gtk.Widget:
     sort_model = Gtk.SortListModel(model=model)
     selection = Gtk.SingleSelection(model=sort_model)
     view = Gtk.ColumnView(model=selection)
-    view.append_column(_text_column("Body", "body", sortable=True, sorter=_string_sorter(PlanetRow, "body")))
-    view.append_column(_text_column("Sign", "sign", sortable=True, sorter=_string_sorter(PlanetRow, "sign")))
-    view.append_column(_text_column("Degree", "degree", sortable=True, sorter=_prop_sorter(PlanetRow, "sort_degree")))
-    view.append_column(_text_column("House", "house", sortable=True, sorter=_prop_sorter(PlanetRow, "sort_house")))
-    view.append_column(_text_column("Dignity", "dignity", sortable=True, sorter=_string_sorter(PlanetRow, "dignity")))
-    view.append_column(_text_column("Speed", "speed", sortable=True, sorter=_string_sorter(PlanetRow, "speed")))
-    view.append_column(_text_column("Retro", "retro", sortable=True, sorter=_string_sorter(PlanetRow, "retro")))
+
+    sorter_specs = {
+        "Body": _make_sorter(PlanetRow, "body"),
+        "Sign": _make_sorter(PlanetRow, "sign"),
+        "Degree": _make_sorter(PlanetRow, "sort_degree"),
+        "House": _make_sorter(PlanetRow, "sort_house"),
+        "Dignity": _make_sorter(PlanetRow, "dignity"),
+        "Speed": _make_sorter(PlanetRow, "speed"),
+        "Retro": _make_sorter(PlanetRow, "retro"),
+    }
+    view.append_column(_text_column("Body", "body", sortable=True, sorter=sorter_specs["Body"]))
+    view.append_column(_text_column("Sign", "sign", sortable=True, sorter=sorter_specs["Sign"]))
+    view.append_column(_text_column("Degree", "degree", sortable=True, sorter=sorter_specs["Degree"]))
+    view.append_column(_text_column("House", "house", sortable=True, sorter=sorter_specs["House"]))
+    view.append_column(_text_column("Dignity", "dignity", sortable=True, sorter=sorter_specs["Dignity"]))
+    view.append_column(_text_column("Speed", "speed", sortable=True, sorter=sorter_specs["Speed"]))
+    view.append_column(_text_column("Retro", "retro", sortable=True, sorter=sorter_specs["Retro"]))
 
     # Default sort: by degree (longitude)
-    sort_model.set_sorter(_prop_sorter(PlanetRow, "sort_degree"))
+    sort_model.set_sorter(sorter_specs["Degree"])
+
+    # Explicit header buttons (GTK 4.22's built-in header sorting drives an
+    # internal sorter that never reorders this model — see module docstring).
+    buttons = {title: _header_button(title) for title in sorter_specs}
+    _install_header_buttons(view, sort_model, buttons, sorter_specs,
+                            default_title="Degree")
+    view._sort_model = sort_model
+    view._sort_buttons = buttons
     return view
 
 
@@ -609,8 +825,10 @@ def build_transit_grid(active_transits: list[dict],
 
     `active_transits` is the priority-scored list from
     astro_analyze.scoring.score_active_transits (already sorted desc by
-    priority; the user can re-sort by clicking headers — re-clicking the
-    same header inverts the order, GTK's built-in behavior).
+    priority). Column headers are explicit Gtk.Buttons wired to the
+    SortListModel — clicking a header sorts, re-clicking inverts, and the
+    active column's label carries a '▲ '/'▼ ' prefix (default sort:
+    priority descending).
 
     `transit_bodies` / `natal_bodies` are the body lists from the transit
     and natal charts; they provide the sign (and longitude / natal house)
@@ -727,19 +945,40 @@ def build_transit_grid(active_transits: list[dict],
     sort_model = Gtk.SortListModel(model=filter_model)
     selection = Gtk.SingleSelection(model=sort_model)
     view = Gtk.ColumnView(model=selection)
-    view.append_column(_glyph_column("T Body", "body", sortable=True, sorter=_string_sorter(TransitRow, "body")))
-    view.append_column(_glyph_column("T Sign", "t_sign", sortable=True, sorter=_string_sorter(TransitRow, "t_sign"), glyph_size=16, glyph_color="#aaaaaa"))
-    view.append_column(_text_column("T House", "t_house", sortable=True, sorter=_prop_sorter(TransitRow, "t_house_num")))
-    view.append_column(_text_column("Aspect", "aspect", sortable=True, sorter=_string_sorter(TransitRow, "aspect")))
-    view.append_column(_glyph_column("N Body", "natal", sortable=True, sorter=_string_sorter(TransitRow, "natal")))
-    view.append_column(_glyph_column("N Sign", "n_sign", sortable=True, sorter=_string_sorter(TransitRow, "n_sign"), glyph_size=16, glyph_color="#aaaaaa"))
-    view.append_column(_text_column("N House", "n_house", sortable=True, sorter=_prop_sorter(TransitRow, "n_house_num")))
-    view.append_column(_text_column("Orb", "orb", sortable=True, sorter=_prop_sorter(TransitRow, "sort_orb")))
-    view.append_column(_text_column("Days", "days", sortable=True, sorter=_prop_sorter(TransitRow, "sort_days")))
-    view.append_column(_text_column("Priority", "priority", sortable=True, sorter=_prop_sorter(TransitRow, "sort_priority", descending=True)))
+
+    sorter_specs = {
+        "T Body": _make_sorter(TransitRow, "body"),
+        "T Sign": _make_sorter(TransitRow, "t_sign"),
+        "T House": _make_sorter(TransitRow, "t_house_num"),
+        "Aspect": _make_sorter(TransitRow, "aspect"),
+        "N Body": _make_sorter(TransitRow, "natal"),
+        "N Sign": _make_sorter(TransitRow, "n_sign"),
+        "N House": _make_sorter(TransitRow, "n_house_num"),
+        "Orb": _make_sorter(TransitRow, "sort_orb"),
+        "Days": _make_sorter(TransitRow, "sort_days"),
+        "Priority": _make_sorter(TransitRow, "sort_priority", descending=True),
+    }
+    view.append_column(_glyph_column("T Body", "body", sortable=True, sorter=sorter_specs["T Body"]))
+    view.append_column(_glyph_column("T Sign", "t_sign", sortable=True, sorter=sorter_specs["T Sign"], glyph_size=16, glyph_color="#aaaaaa"))
+    view.append_column(_text_column("T House", "t_house", sortable=True, sorter=sorter_specs["T House"]))
+    view.append_column(_text_column("Aspect", "aspect", sortable=True, sorter=sorter_specs["Aspect"]))
+    view.append_column(_glyph_column("N Body", "natal", sortable=True, sorter=sorter_specs["N Body"]))
+    view.append_column(_glyph_column("N Sign", "n_sign", sortable=True, sorter=sorter_specs["N Sign"], glyph_size=16, glyph_color="#aaaaaa"))
+    view.append_column(_text_column("N House", "n_house", sortable=True, sorter=sorter_specs["N House"]))
+    view.append_column(_text_column("Orb", "orb", sortable=True, sorter=sorter_specs["Orb"]))
+    view.append_column(_text_column("Days", "days", sortable=True, sorter=sorter_specs["Days"]))
+    view.append_column(_text_column("Priority", "priority", sortable=True, sorter=sorter_specs["Priority"]))
 
     # Default sort: priority descending
-    sort_model.set_sorter(_prop_sorter(TransitRow, "sort_priority", descending=True))
+    sort_model.set_sorter(sorter_specs["Priority"])
+
+    # Explicit header buttons (GTK 4.22's built-in header sorting drives an
+    # internal sorter that never reorders this model — see module docstring).
+    buttons = {title: _header_button(title) for title in sorter_specs}
+    _install_header_buttons(view, sort_model, buttons, sorter_specs,
+                            default_title="Priority")
+    view._sort_model = sort_model
+    view._sort_buttons = buttons
 
     def _on_filter_changed(*_args):
         filt.changed(Gtk.FilterChange.DIFFERENT)
@@ -761,7 +1000,12 @@ def build_transit_grid(active_transits: list[dict],
 
 
 def build_planet_agg_table(rows: list[dict]) -> Gtk.Widget:
-    """By-planet aggregation: Body, Total, Count, Top Aspect, vs Natal."""
+    """By-planet aggregation: Body, Total, Count, Top Aspect, vs Natal.
+
+    Column headers are explicit Gtk.Buttons wired to the SortListModel —
+    clicking a header sorts, re-clicking inverts, and the active column's
+    label carries a '▲ '/'▼ ' prefix (default sort: total descending).
+    """
     agg_rows = []
     for r in rows:
         agg_rows.append(PlanetAggRow(
@@ -771,6 +1015,7 @@ def build_planet_agg_table(rows: list[dict]) -> Gtk.Widget:
             top_aspect=r.get("top_aspect", ""),
             vs_natal=r.get("top_natal_body", ""),
             sort_total=int(r.get("total_priority", 0)),
+            sort_count=int(r.get("transit_count", 0)),
         ))
 
     model = Gio.ListStore.new(PlanetAggRow)
@@ -780,11 +1025,28 @@ def build_planet_agg_table(rows: list[dict]) -> Gtk.Widget:
     sort_model = Gtk.SortListModel(model=model)
     selection = Gtk.SingleSelection(model=sort_model)
     view = Gtk.ColumnView(model=selection)
-    view.append_column(_text_column("Body", "body", sortable=True, sorter=_string_sorter(PlanetAggRow, "body")))
-    view.append_column(_text_column("Total", "total", sortable=True, sorter=_prop_sorter(PlanetAggRow, "sort_total", descending=True)))
-    view.append_column(_text_column("Count", "count", sortable=True, sorter=_prop_sorter(PlanetAggRow, "sort_total")))
-    view.append_column(_text_column("Top Aspect", "top_aspect", sortable=True, sorter=_string_sorter(PlanetAggRow, "top_aspect")))
-    view.append_column(_text_column("vs Natal", "vs_natal", sortable=True, sorter=_string_sorter(PlanetAggRow, "vs_natal")))
 
-    sort_model.set_sorter(_prop_sorter(PlanetAggRow, "sort_total", descending=True))
+    sorter_specs = {
+        "Body": _make_sorter(PlanetAggRow, "body"),
+        "Total": _make_sorter(PlanetAggRow, "sort_total", descending=True),
+        "Count": _make_sorter(PlanetAggRow, "sort_count"),
+        "Top Aspect": _make_sorter(PlanetAggRow, "top_aspect"),
+        "vs Natal": _make_sorter(PlanetAggRow, "vs_natal"),
+    }
+    view.append_column(_text_column("Body", "body", sortable=True, sorter=sorter_specs["Body"]))
+    view.append_column(_text_column("Total", "total", sortable=True, sorter=sorter_specs["Total"]))
+    view.append_column(_text_column("Count", "count", sortable=True, sorter=sorter_specs["Count"]))
+    view.append_column(_text_column("Top Aspect", "top_aspect", sortable=True, sorter=sorter_specs["Top Aspect"]))
+    view.append_column(_text_column("vs Natal", "vs_natal", sortable=True, sorter=sorter_specs["vs Natal"]))
+
+    # Default sort: total descending
+    sort_model.set_sorter(sorter_specs["Total"])
+
+    # Explicit header buttons (GTK 4.22's built-in header sorting drives an
+    # internal sorter that never reorders this model — see module docstring).
+    buttons = {title: _header_button(title) for title in sorter_specs}
+    _install_header_buttons(view, sort_model, buttons, sorter_specs,
+                            default_title="Total")
+    view._sort_model = sort_model
+    view._sort_buttons = buttons
     return view
