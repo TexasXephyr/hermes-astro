@@ -1153,6 +1153,49 @@ class MainWindow(Gtk.ApplicationWindow):
         except Exception as exc:
             self._status_bar.set_info(f"Calendar error: {exc}")
 
+    def _ensure_cookbook_path(self):
+        """Make `astro_transit_cookbook` importable for the Cookbook tab.
+
+        The cookbook is pip-installed in the Hermes venv but the GUI runs
+        under the system python (PEP 668 externally-managed), so the
+        source dir must be on sys.path. If the package is not already
+        importable, resolve the standard checkout (~/dev/astro-transit-
+        cookbook, overridable via ASTRO_COOKBOOK_SRC) and prepend it.
+        Idempotent and no-op when already importable.
+        """
+        import sys
+
+        def _importable() -> bool:
+            try:
+                import astro_transit_cookbook  # noqa: F401
+                return True
+            except ImportError:
+                return False
+
+        if _importable():
+            return
+
+        import os
+        from pathlib import Path
+
+        candidates = []
+        env = os.environ.get("ASTRO_COOKBOOK_SRC")
+        if env:
+            candidates.append(Path(env))
+        candidates.append(Path.home() / "dev" / "astro-transit-cookbook")
+
+        for src in candidates:
+            if (src / "astro_transit_cookbook").is_dir():
+                sys.path.insert(0, str(src))
+                if _importable():
+                    return
+                sys.path.remove(str(src))
+
+        raise ImportError(
+            "astro_transit_cookbook not found. Install it in the Hermes venv "
+            "or set ASTRO_COOKBOOK_SRC to its checkout directory."
+        )
+
     def _refresh_cookbook(self):
         """Build the Cookbook tab: selectable placements with corpus prose.
 
@@ -1167,6 +1210,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self._status_bar.set_info("No person selected")
             return
         try:
+            self._ensure_cookbook_path()
             from astro_transit_cookbook.core import (
                 build_natal_snapshot,
                 build_natal_cookbook,
