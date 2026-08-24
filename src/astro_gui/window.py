@@ -226,6 +226,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._by_planet_rows = None
         self._calendar_data = None
         self._cookbook_entries = None
+        self._cookbook_payload = None
 
         # Root vertical box
         root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -751,6 +752,19 @@ class MainWindow(Gtk.ApplicationWindow):
         btn_cb_go = Gtk.Button(label="Update")
         btn_cb_go.connect("clicked", lambda _b: self._refresh_cookbook())
         cb_controls.append(btn_cb_go)
+
+        btn_cb_synth = Gtk.Button(label="Synthesize")
+        btn_cb_synth.set_tooltip_text(
+            "Queue this chart+mode cookbook data for the Zen-Sensei synthesis report"
+        )
+        btn_cb_synth.connect("clicked", lambda _b: self._request_synthesis())
+        cb_controls.append(btn_cb_synth)
+
+        btn_cb_show = Gtk.Button(label="Synthesis")
+        btn_cb_show.set_tooltip_text("Show the latest synthesis report for this chart+mode")
+        btn_cb_show.connect("clicked", lambda _b: self._show_synthesis())
+        cb_controls.append(btn_cb_show)
+
         cookbook_box.append(cb_controls)
 
         self._cookbook_view_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -1250,6 +1264,13 @@ class MainWindow(Gtk.ApplicationWindow):
             finally:
                 conn.close()
             self._cookbook_entries = entries
+            self._cookbook_payload = {
+                "mode": mode,
+                "label": label,
+                "chart_id": person.get("chart_id", ""),
+                "snapshot": snapshot.to_dict(),
+                "cookbook": cookbook,
+            }
             view = build_cookbook_list(entries)
             child = self._cookbook_view_box.get_first_child()
             while child is not None:
@@ -1261,6 +1282,61 @@ class MainWindow(Gtk.ApplicationWindow):
             )
         except Exception as exc:
             self._status_bar.set_info(f"Cookbook error: {exc}")
+
+    def _request_synthesis(self):
+        """Queue the current cookbook payload for the Zen-Sensei worker.
+
+        Inserts a pending row into the shared `syntheses` table (library
+        DB). The zen-sensei profile's cron picks it up, writes the
+        report, and marks it done; the Synthesis button then shows it.
+        """
+        payload = getattr(self, "_cookbook_payload", None)
+        person = self._selected_person
+        if not payload or person is None:
+            self._status_bar.set_info("Load the cookbook first, then Synthesize")
+            return
+        try:
+            from astro_gui.synthesis_store import request_synthesis
+            synth_id = request_synthesis(
+                payload["chart_id"], payload["mode"], payload["label"],
+                {"snapshot": payload["snapshot"], "cookbook": payload["cookbook"]},
+            )
+            self._status_bar.set_info(
+                f"Synthesis #{synth_id} queued ({payload['mode']}) — Zen-Sensei will write the report"
+            )
+        except Exception as exc:
+            self._status_bar.set_info(f"Synthesize error: {exc}")
+
+    def _show_synthesis(self):
+        """Show the latest synthesis report for the current chart+mode."""
+        person = self._selected_person
+        if person is None or not person.get("chart_id"):
+            self._status_bar.set_info("No person selected")
+            return
+        mode = self._cookbook_mode.get_selected_item().get_string()
+        try:
+            from astro_gui.synthesis_store import latest_synthesis
+            row = latest_synthesis(person["chart_id"], mode)
+            if row is None:
+                self._status_bar.set_info(f"No synthesis yet for {mode} — press Synthesize first")
+                return
+            if row["status"] == "pending":
+                self._status_bar.set_info(
+                    f"Synthesis #{row['id']} pending — Zen-Sensei hasn't written it yet"
+                )
+                return
+            if row["status"] == "error":
+                self._status_bar.set_info(f"Synthesis #{row['id']} failed: {row.get('error')}")
+                return
+            # done: replace the cookbook view with the report in the detail pane
+            view = self._cookbook_view_box.get_first_child()
+            if view is not None and hasattr(view, "detail_label"):
+                view.detail_label.set_markup(
+                    f"<b>Synthesis — {row.get('label') or mode}</b>\n\n{row['report']}"
+                )
+            self._status_bar.set_info(f"Synthesis #{row['id']} ({mode})")
+        except Exception as exc:
+            self._status_bar.set_info(f"Synthesis error: {exc}")
 
     def _cookbook_when(self, date: str):
         """Parse a YYYY-MM-DD transit date into a tz-aware datetime (noop-ish)."""
