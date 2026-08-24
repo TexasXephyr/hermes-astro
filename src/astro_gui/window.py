@@ -16,7 +16,7 @@ from astro_api_client import AstroClient
 from astro_analyze.scoring import planet_relative_values
 from astro_gui.widgets.person_selector import PersonSelector
 from astro_gui.widgets.status_bar import StatusBar
-from astro_gui.renderers.wheel_renderer import WheelRenderer
+from astro_display import WheelRenderer
 from astro_gui.renderers.table_renderer import (
     build_planet_table,
     build_transit_grid,

@@ -2,6 +2,16 @@
 
 Port of ``astro_gui.renderers.wheel_renderer.WheelRenderer`` that uses
 the consolidated ``astro_text.symbols`` and ``astro_data.loaders`` APIs.
+
+2026-08-23 rendering fixes (Natal + Transit):
+- Use the canonical symbol tables from the YAML corpus (fixes South Node ☋,
+  Pluto at the correct codepoint; no hard-coded glyph dicts).
+- Resize the wheel so the outer ring is ~95% of the canvas and zodiac marks
+  stay inside the viewport (no clipped crescents at the four cardinal points).
+- Draw Ascendant and Midheaven as aspectable points (lines + dots).
+- Move aspect dots outward, just inside the planet ring.
+- Render the retrograde mark as a small superscript so it no longer dwarfs
+  the planet glyph.
 """
 
 import math
@@ -9,6 +19,7 @@ from typing import Dict, List, Tuple
 
 from astro_data.loaders import yaml_loader
 from astro_text.symbols import symbol_for_body, symbol_for_sign
+from astro_text.aspects import find_aspect
 
 from astro_display.fonts import find_font
 
@@ -23,6 +34,9 @@ SIGN_NAMES = [
 
 RETROGRADE_GLYPH = "\u211E"  # ℞
 
+# Angle point names — drawn with text labels (LiberZodiac has no angle glyphs)
+ASC_LABEL = "Asc"
+MC_LABEL = "MC"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -76,12 +90,12 @@ class WheelRenderer:
         self.height = height
         self.cx = width / 2.0
         self.cy = height / 2.0
-        # radii
-        self.R_outer = 280.0
+        # radii — outer ring sized to ~95% of canvas so zodiac marks fit
+        self.R_outer = 266.0          # house wedge outer edge (was 280)
         self.R_inner_house = 180.0
-        self.R_planet = 230.0
-        self.R_aspect = 100.0
-        self.R_sign = 295.0
+        self.R_planet = 225.0        # natal planet glyphs
+        self.R_aspect = 165.0        # aspect dots, just inside the house ring edge
+        self.R_sign = 285.0          # zodiac marks just outside the ring
 
     # ------------------------------------------------------------------
     # Public API
@@ -115,12 +129,16 @@ class WheelRenderer:
         # Sign labels
         parts.extend(self._render_sign_labels(ascendant))
 
-        # Aspect lines (inner)
-        body_lookup = {b["name"]: b["longitude"] for b in bodies}
+        # Aspect lines (inner) — include Ascendant/MC as aspectable points
+        body_lookup = self._aspectable_lookup(bodies, chart_data.get("angles", {}))
+        aspects = self._with_asc_aspects(bodies, chart_data.get("angles", {}), aspects)
         parts.extend(self._render_aspects(aspects, body_lookup, ascendant))
 
         # Planets
         parts.extend(self._render_planets(bodies, ascendant))
+
+        # Ascendant / Midheaven markers (drawn as aspectable points)
+        parts.extend(self._render_angle_points(chart_data.get("angles", {}), ascendant))
 
         # Outer rim circle
         parts.append(
@@ -152,16 +170,17 @@ class WheelRenderer:
 
         self.width, self.height = width, height
         self.cx, self.cy = width / 2.0, height / 2.0
-        self.R_outer = 280.0
-        self.R_planet = 220.0          # natal planets a bit inward
-        self.R_aspect = 90.0
-        self.R_sign = 295.0
+        self.R_outer = 266.0
+        self.R_planet = 225.0          # natal planets a bit inward
+        self.R_aspect = 165.0
+        self.R_sign = 285.0
 
         ascendant = natal_data.get("angles", {}).get("ascendant", 0.0)
         natal_houses = natal_data.get("houses", [])
         natal_bodies = natal_data.get("bodies", [])
         transit_bodies = transit_data.get("bodies", [])
         natal_aspects = natal_data.get("aspects", [])
+        natal_angles = natal_data.get("angles", {})
 
         parts: List[str] = []
         parts.append(self._svg_header())
@@ -177,12 +196,16 @@ class WheelRenderer:
         parts.extend(self._render_cusp_lines(natal_houses, ascendant))
         parts.extend(self._render_sign_labels(ascendant))
 
-        # Natal aspects (inner)
-        body_lookup = {b["name"]: b["longitude"] for b in natal_bodies}
+        # Natal aspects (inner) — include Ascendant/MC as aspectable points
+        body_lookup = self._aspectable_lookup(natal_bodies, natal_angles)
+        natal_aspects = self._with_asc_aspects(natal_bodies, natal_angles, natal_aspects)
         parts.extend(self._render_aspects(natal_aspects, body_lookup, ascendant))
 
         # Natal planets
         parts.extend(self._render_planets(natal_bodies, ascendant))
+
+        # Natal angle points
+        parts.extend(self._render_angle_points(natal_angles, ascendant))
 
         # Transit ring divider
         parts.append(
@@ -191,7 +214,7 @@ class WheelRenderer:
         )
 
         # Transit planets on outer ring
-        self.R_planet = 260.0
+        self.R_planet = 255.0
         parts.extend(self._render_planets(transit_bodies, ascendant, suffix=" (T)", color="#ffd43b"))
 
         # Outer rim
@@ -233,11 +256,11 @@ class WheelRenderer:
 
         self.width, self.height = width, height
         self.cx, self.cy = width / 2.0, height / 2.0
-        self.R_outer = 280.0
+        self.R_outer = 266.0
         self.R_inner_house = 160.0   # slightly smaller inner
-        self.R_planet = 200.0        # Person A planets inward
-        self.R_aspect = 120.0
-        self.R_sign = 295.0
+        self.R_planet = 205.0        # Person A planets inward
+        self.R_aspect = 150.0
+        self.R_sign = 285.0
 
         ascendant_a = chart_a_data.get("angles", {}).get("ascendant", 0.0)
         houses_a = chart_a_data.get("houses", [])
@@ -273,7 +296,7 @@ class WheelRenderer:
         )
 
         # Person B planets (outer ring)
-        self.R_planet = 260.0
+        self.R_planet = 245.0
         parts.extend(self._render_planets(bodies_b, ascendant_a, suffix=" (B)", color="#ffd43b"))
 
         # Outer rim
@@ -293,6 +316,45 @@ class WheelRenderer:
         )
 
         return "".join(parts)
+
+    # ------------------------------------------------------------------
+    # Aspectable point helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _aspectable_lookup(bodies: List[Dict], angles: Dict) -> Dict[str, float]:
+        """Body longitude lookup that also includes Ascendant and Midheaven."""
+        lookup = {b["name"]: b["longitude"] for b in bodies}
+        asc = angles.get("ascendant")
+        mc = angles.get("mc")
+        if asc is not None:
+            lookup[ASC_LABEL] = float(asc)
+        if mc is not None:
+            lookup[MC_LABEL] = float(mc)
+        return lookup
+
+    def _with_asc_aspects(
+        self, bodies: List[Dict], angles: Dict, aspects: List[Dict]
+    ) -> List[Dict]:
+        """Append aspects from every body to Ascendant and Midheaven."""
+        extra: List[Dict] = []
+        asc = angles.get("ascendant")
+        mc = angles.get("mc")
+        for b in bodies:
+            for label, lon in ((ASC_LABEL, asc), (MC_LABEL, mc)):
+                if lon is None:
+                    continue
+                diff = abs((b["longitude"] - float(lon) + 180.0) % 360.0 - 180.0)
+                a = find_aspect(diff)
+                if a is None:
+                    continue
+                extra.append({
+                    "body_a": b["name"],
+                    "body_b": label,
+                    "aspect_name": a["name"],
+                    "aspect": a["name"],
+                    "orb": a["orb"],
+                })
+        return list(aspects) + extra
 
     # ------------------------------------------------------------------
     # Building blocks
@@ -427,6 +489,31 @@ class WheelRenderer:
             )
         return parts
 
+    def _render_angle_points(self, angles: Dict, ascendant: float) -> List[str]:
+        """Draw Ascendant and Midheaven as labeled, aspectable points."""
+        parts: List[str] = []
+        for label, key, color in (
+            (ASC_LABEL, "ascendant", "#ffffff"),
+            (MC_LABEL, "mc", "#ffffff"),
+        ):
+            lon = angles.get(key)
+            if lon is None:
+                continue
+            a = _display_angle(float(lon), ascendant)
+            x_glyph, y_glyph = _polar(self.cx, self.cy, self.R_planet, a)
+            x_aspect, y_aspect = _polar(self.cx, self.cy, self.R_aspect, a)
+            # Filled circle at the aspect convergence radius
+            parts.append(
+                f'    <circle cx="{x_aspect:.2f}" cy="{y_aspect:.2f}" r="3.5" fill="#ffd43b"/>\n'
+            )
+            # Label at the planet radius
+            parts.append(
+                f'    <text x="{x_glyph:.2f}" y="{y_glyph:.2f}" text-anchor="middle" '
+                f'dominant-baseline="middle" fill="{color}" font-size="11" '
+                f'font-family="LiberZodiac, DejaVu Sans, sans-serif">{label}</text>\n'
+            )
+        return parts
+
     def _render_planets(
         self,
         bodies: List[Dict],
@@ -449,8 +536,6 @@ class WheelRenderer:
             deg = b.get("sign_degree", 0.0)
 
             glyph = symbol_for_body(name) or name[:2]
-            if retro:
-                glyph = str(glyph) + RETROGRADE_GLYPH
 
             # Filled circle at the aspect convergence radius
             parts.append(
@@ -460,12 +545,21 @@ class WheelRenderer:
             # Planet glyph at R_planet (farther out)
             parts.append(
                 f'    <text x="{x_glyph:.2f}" y="{y_glyph:.2f}" text-anchor="middle" '
-                f'dominant-baseline="middle" fill="{color}" font-size="18" '
+                f'dominant-baseline="middle" fill="{color}" font-size="20" '
                 f'font-family="LiberZodiac, DejaVu Sans, sans-serif">{glyph}{suffix}</text>\n'
             )
 
+            # Retrograde mark as a small separate glyph above-right of the planet
+            if retro:
+                x_retro, y_retro = _polar(self.cx, self.cy, self.R_planet + 10, a)
+                parts.append(
+                    f'    <text x="{x_retro:.2f}" y="{y_retro:.2f}" text-anchor="middle" '
+                    f'dominant-baseline="middle" fill="#ff8c8c" font-size="9" '
+                    f'font-family="DejaVu Sans, sans-serif">{RETROGRADE_GLYPH}</text>\n'
+                )
+
             # Degree text just beyond the glyph
-            x_deg, y_deg = _polar(self.cx, self.cy, self.R_planet + 18, a)
+            x_deg, y_deg = _polar(self.cx, self.cy, self.R_planet + 16, a)
             deg_label = f"{deg:.0f}°"
             parts.append(
                 f'    <text x="{x_deg:.2f}" y="{y_deg:.2f}" text-anchor="middle" '

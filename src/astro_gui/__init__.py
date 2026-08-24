@@ -5,7 +5,10 @@ from .window import MainWindow
 from .widgets.person_selector import PersonSelector
 from .widgets.status_bar import StatusBar
 
-from .renderers.wheel_renderer import WheelRenderer
+# NOTE: WheelRenderer now lives in the centralized astro_display package.
+# The legacy astro_gui.renderers.wheel_renderer is deprecated and no longer
+# exported here; consumers should use `from astro_display import WheelRenderer`.
+from astro_display import WheelRenderer
 
 __all__ = [
     "AstroApiClient",

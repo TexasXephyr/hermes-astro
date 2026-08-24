@@ -4,7 +4,7 @@ import sys
 sys.path.insert(0, "/home/xephyr/astro/src")
 
 from astro_api_client import AstroClient
-from astro_gui.renderers.wheel_renderer import WheelRenderer
+from astro_display import WheelRenderer
 
 
 def main():

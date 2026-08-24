@@ -80,9 +80,54 @@ def test_render_natal_returns_valid_svg(renderer):
     # Spot-check expected elements exist
     assert "LiberZodiac" in svg
     assert "file://" in svg
-    assert "Sun" in svg or "☉" in svg
-    assert "Moon" in svg or "☽" in svg
+    assert "☉" in svg  # Sun glyph
+    assert "☽" in svg  # Moon glyph
     assert "#69db7c" in svg  # sextile color
+
+
+def test_render_natal_asc_mc_labels_present(renderer):
+    chart = {
+        "angles": {"ascendant": 113.0, "mc": 9.5},
+        "houses": SAMPLE_HOUSES,
+        "bodies": SAMPLE_BODIES,
+        "aspects": [],
+    }
+    svg = renderer.render_natal(chart)
+    assert "Asc" in svg
+    assert "MC" in svg
+
+
+def test_render_natal_south_node_glyph(renderer):
+    """South Node renders as the ☋ glyph, not a capital S fallback."""
+    chart = {
+        "angles": {"ascendant": 0.0},
+        "houses": SAMPLE_HOUSES,
+        "bodies": [
+            {"name": "South Node", "longitude": 166.9, "sign_degree": 16.9, "retrograde": False},
+        ],
+        "aspects": [],
+    }
+    svg = renderer.render_natal(chart)
+    assert "☋" in svg
+    assert "<text x=\"\" " not in svg  # no empty glyph fallback
+
+
+def test_render_natal_no_clipped_signs(renderer):
+    """Sign labels stay inside the canvas (no thin crescents at edges)."""
+    chart = {
+        "angles": {"ascendant": 0.0},
+        "houses": SAMPLE_HOUSES,
+        "bodies": [],
+        "aspects": [],
+    }
+    svg = renderer.render_natal(chart)
+    # All text coordinates must be within [0, 600]
+    import re
+    for m in re.finditer(r'<text x="([0-9.]+)" y="([0-9.]+)"', svg):
+        x = float(m.group(1))
+        y = float(m.group(2))
+        assert 0 <= x <= 600, f"text x out of canvas: {x}"
+        assert 0 <= y <= 600, f"text y out of canvas: {y}"
 
 
 def test_render_natal_scale_applied(renderer):
