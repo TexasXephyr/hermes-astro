@@ -22,6 +22,18 @@ from astro_gui.persistence import DocumentSetStore
 from astro_gui.widgets.person_selector import PersonSelector
 from astro_gui.widgets.status_bar import StatusBar
 from astro_display import WheelRenderer, TableRenderer
+from astro_display.svg.hit_test import (
+    build_natal_hotspots,
+    build_transit_hotspots,
+    build_synastry_hotspots,
+    hit_test,
+    widget_to_svg,
+)
+from astro_gui.widgets.hover_panel import HoverPanel
+from astro_gui.renderers.wheel_hover import (
+    render_target_markup,
+    build_cookbook_index,
+)
 from astro_gui.renderers.table_renderer import (
     build_transit_grid,
     build_planet_agg_table,
@@ -227,6 +239,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self._calendar_data = None
         self._cookbook_entries = None
         self._cookbook_payload = None
+        # Hover inspector state (populated when each wheel renders)
+        self._natal_hotspots = []
+        self._natal_hover_ctx = {}
+        self._transit_hotspots = []
+        self._transit_hover_ctx = {}
+        self._synastry_hotspots = []
+        self._synastry_hover_ctx = {}
 
         # Root vertical box
         root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -581,7 +600,12 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # --- Tab 1: Natal Wheel ---
         self._natal_scroll, self._natal_picture = self._make_wheel_view()
-        notebook.append_page(self._natal_scroll, Gtk.Label(label="Natal Wheel"))
+        self._natal_hover_panel = HoverPanel()
+        self._natal_paned = self._wrap_hover_paned(self._natal_scroll, self._natal_hover_panel)
+        notebook.append_page(self._natal_paned, Gtk.Label(label="Natal Wheel"))
+        self._attach_hover(self._natal_picture, self._natal_hover_panel,
+                           lambda: self._natal_hotspots,
+                           self._natal_hover_ctx)
 
         # --- Tab 2: Transit Wheel ---
         self._transit_scroll, self._transit_picture = self._make_wheel_view()
@@ -642,7 +666,12 @@ class MainWindow(Gtk.ApplicationWindow):
         transit_box.append(self._transit_picture)
         self._transit_picture.set_vexpand(True)
 
-        notebook.append_page(self._transit_scroll, Gtk.Label(label="Transit Wheel"))
+        self._transit_hover_panel = HoverPanel()
+        self._transit_paned = self._wrap_hover_paned(self._transit_scroll, self._transit_hover_panel)
+        notebook.append_page(self._transit_paned, Gtk.Label(label="Transit Wheel"))
+        self._attach_hover(self._transit_picture, self._transit_hover_panel,
+                           lambda: self._transit_hotspots,
+                           self._transit_hover_ctx)
 
         # --- Tab 3: Synastry Wheel ---
         self._synastry_scroll, self._synastry_picture = self._make_wheel_view()
@@ -668,7 +697,12 @@ class MainWindow(Gtk.ApplicationWindow):
         synastry_box.append(self._synastry_picture)
         self._synastry_picture.set_vexpand(True)
 
-        notebook.append_page(self._synastry_scroll, Gtk.Label(label="Synastry Wheel"))
+        self._synastry_hover_panel = HoverPanel()
+        self._synastry_paned = self._wrap_hover_paned(self._synastry_scroll, self._synastry_hover_panel)
+        notebook.append_page(self._synastry_paned, Gtk.Label(label="Synastry Wheel"))
+        self._attach_hover(self._synastry_picture, self._synastry_hover_panel,
+                           lambda: self._synastry_hotspots,
+                           self._synastry_hover_ctx)
 
         # --- Tab 4: Natal Table ---
         self._natal_table_scroll, self._natal_table_picture = self._make_wheel_view()
@@ -786,6 +820,53 @@ class MainWindow(Gtk.ApplicationWindow):
         picture.set_content_fit(Gtk.ContentFit.CONTAIN)
         scroll.set_child(picture)
         return scroll, picture
+
+    def _wrap_hover_paned(self, wheel_scroll: Gtk.ScrolledWindow,
+                          panel: HoverPanel) -> Gtk.Paned:
+        """Wrap a wheel scroll + hover panel in a horizontal paned view."""
+        paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        paned.set_hexpand(True)
+        paned.set_vexpand(True)
+        paned.set_wide_handle(True)
+        paned.set_start_child(wheel_scroll)
+        paned.set_end_child(panel)
+        paned.set_position(760)
+        return paned
+
+    def _attach_hover(self, picture: Gtk.Picture, panel: HoverPanel,
+                      hotspots_getter, ctx_getter):
+        """Attach a motion controller that hit-tests the wheel and updates the panel."""
+        controller = Gtk.EventControllerMotion.new()
+        controller.connect("motion", self._on_hover_motion, picture, panel,
+                           hotspots_getter, ctx_getter)
+        controller.connect("leave", self._on_hover_leave, panel)
+        picture.add_controller(controller)
+
+    def _on_hover_motion(self, controller, x, y, picture, panel,
+                         hotspots_getter, ctx_getter):
+        """Hit-test the wheel at (x, y) and show the best target in the panel."""
+        try:
+            w = picture.get_width()
+            h = picture.get_height()
+            sx, sy = widget_to_svg(x, y, w, h)
+            if sx is None or sy is None:
+                panel.clear()
+                return
+            hotspots = hotspots_getter() or []
+            if not hotspots:
+                panel.clear()
+                return
+            hits = hit_test(sx, sy, hotspots)
+            if not hits:
+                panel.clear()
+                return
+            ctx = ctx_getter() or {}
+            panel.show_markup(render_target_markup(hits[0], ctx))
+        except Exception:
+            panel.clear()
+
+    def _on_hover_leave(self, controller, panel):
+        panel.clear()
 
     def _today_iso(self) -> str:
         import datetime
@@ -965,6 +1046,8 @@ class MainWindow(Gtk.ApplicationWindow):
             svg = self._renderer.render_natal(chart, scale=1.0)
             self._last_wheel_svg = svg
             self._display_svg(svg, self._natal_picture)
+            self._natal_hotspots = build_natal_hotspots(chart)
+            self._natal_hover_ctx = self._natal_hover_context(chart)
             bodies = chart.get("bodies", [])
             sun = next((b for b in bodies if b.get("name") == "Sun"), None)
             asc = chart.get("angles", {}).get("ascendant", 0)
@@ -1023,6 +1106,10 @@ class MainWindow(Gtk.ApplicationWindow):
             )
             self._last_wheel_svg = svg
             self._display_svg(svg, self._transit_picture)
+            self._transit_hotspots = build_transit_hotspots(natal_chart, result)
+            self._transit_hover_ctx = self._transit_hover_context(
+                natal_chart, result, aspect_mode
+            )
             loc = f" @ {lat_text},{lon_text}" if lat_text and lon_text else ""
             self._status_bar.set_info(
                 f"Transit for {person_dict.get('name')} on {date} {time}{loc} "
@@ -1385,12 +1472,120 @@ class MainWindow(Gtk.ApplicationWindow):
             )
             self._last_wheel_svg = svg
             self._display_svg(svg, self._synastry_picture)
+            self._synastry_hotspots = build_synastry_hotspots(
+                chart_a, chart_b, result.get("cross_aspects", [])
+            )
+            self._synastry_hover_ctx = self._synastry_hover_context(
+                chart_a, chart_b, result.get("cross_aspects", [])
+            )
             count = len(result.get("cross_aspects", []))
             self._status_bar.set_info(
                 f"Synastry: {person_a.get('name')} vs {person_b.get('name')} — {count} cross aspects"
             )
         except Exception as exc:
             self._status_bar.set_info(f"Synastry error: {exc}")
+
+    # ------------------------------------------------------------------
+    # Hover inspector contexts (cookbook-grounded)
+    # ------------------------------------------------------------------
+    def _natal_hover_context(self, chart: dict) -> dict:
+        """Context for the natal wheel hover panel: bodies, aspects, cookbook."""
+        ctx = {
+            "bodies": chart.get("bodies", []),
+            "aspects": chart.get("aspects", []),
+            "aspect_domain": "aspect",
+            "sign_domain": "natal-sign",
+            "house_domain": "natal-house",
+            "a_key": "body_a",
+            "b_key": "body_b",
+            "cookbook": {},
+        }
+        try:
+            self._ensure_cookbook_path()
+            from astro_transit_cookbook.core import (
+                build_natal_snapshot,
+                build_natal_cookbook,
+                open_corpus,
+            )
+            snapshot = build_natal_snapshot(chart.get("meta", {}).get("name", ""))
+            conn = open_corpus()
+            try:
+                cookbook = build_natal_cookbook(snapshot, conn)
+            finally:
+                conn.close()
+            ctx["cookbook"] = build_cookbook_index(snapshot, cookbook)
+        except Exception:
+            ctx["cookbook"] = {}
+        return ctx
+
+    def _transit_hover_context(self, natal_chart: dict, transit_result: dict,
+                               aspect_mode: str) -> dict:
+        """Context for the transit wheel hover panel."""
+        ctx = {
+            "bodies": transit_result.get("bodies", []),
+            "aspects": transit_result.get("cross_aspects", []),
+            "aspect_domain": "transit-aspect",
+            "sign_domain": "transit-sign",
+            "house_domain": "transit-house",
+            "a_key": "transit_body",
+            "b_key": "natal_body",
+            "cookbook": {},
+        }
+        try:
+            self._ensure_cookbook_path()
+            from astro_transit_cookbook.core import (
+                build_snapshot,
+                build_cookbook,
+                open_corpus,
+            )
+            date = self._transit_date.get_text().strip()
+            snapshot = build_snapshot(
+                natal_chart.get("meta", {}).get("name", ""),
+                when=self._cookbook_when(date),
+            )
+            conn = open_corpus()
+            try:
+                cookbook = build_cookbook(snapshot, conn)
+            finally:
+                conn.close()
+            ctx["cookbook"] = build_cookbook_index(snapshot, cookbook)
+        except Exception:
+            ctx["cookbook"] = {}
+        return ctx
+
+    def _synastry_hover_context(self, chart_a: dict, chart_b: dict,
+                                cross_aspects: list) -> dict:
+        """Context for the synastry wheel hover panel."""
+        ctx = {
+            "bodies": chart_a.get("bodies", []),
+            "aspects": cross_aspects,
+            "aspect_domain": "synastry-aspect",
+            "sign_domain": "natal-sign",
+            "house_domain": "synastry-house",
+            "a_key": "body_a",
+            "b_key": "body_b",
+            "cookbook": {},
+        }
+        try:
+            self._ensure_cookbook_path()
+            from astro_transit_cookbook.core import (
+                build_synastry_snapshot,
+                build_synastry_cookbook,
+                open_corpus,
+            )
+            snapshot = build_synastry_snapshot(
+                chart_a.get("meta", {}).get("name", ""),
+                chart_b.get("meta", {}).get("name", ""),
+            )
+            conn = open_corpus()
+            try:
+                cookbook = build_synastry_cookbook(snapshot, conn)
+            finally:
+                conn.close()
+            ctx["cookbook"] = build_cookbook_index(snapshot, cookbook)
+        except Exception:
+            ctx["cookbook"] = {}
+        return ctx
 
     # ------------------------------------------------------------------
     # Export (item 33: Save button)
