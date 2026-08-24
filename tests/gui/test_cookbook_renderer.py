@@ -16,6 +16,8 @@ from gi.repository import Gtk, GLib
 from astro_gui.renderers.cookbook_renderer import (
     build_cookbook_list,
     natal_cookbook_entries,
+    transit_cookbook_entries,
+    synastry_cookbook_entries,
     CookbookEntry,
 )
 
@@ -217,6 +219,106 @@ def _detail_grows_with_content():
 
 
 check("cookbook list: detail pane above list, variable depth (no clip)", _detail_grows_with_content)
+
+
+class _FakeTransitSnapshot:
+    def __init__(self, bodies, active_transits):
+        self.bodies = bodies
+        self.active_transits = active_transits
+        self.observed_at = "2026-08-24T07:00:00-07:00"
+
+
+TRANSIT_SNAPSHOT = _FakeTransitSnapshot(
+    bodies=[
+        {"name": "Saturn", "sign": "Pisces", "sign_degree": 3.5,
+         "natal_house": 4, "retrograde": True},
+        {"name": "Mars", "sign": "Aries", "sign_degree": 12.0,
+         "natal_house": 9, "retrograde": False},
+    ],
+    active_transits=[
+        {"transiting_body": "Saturn", "natal_body": "Sun", "aspect": "conjunction",
+         "orb": 0.5, "days_to_exact": 2},
+        {"transiting_body": "Moon", "natal_body": "Venus", "aspect": "square",
+         "orb": 1.2, "days_to_exact": 0},
+    ],
+)
+
+TRANSIT_COOKBOOK = {
+    "transit_signs": [
+        {"body": "Saturn", "sign": "Pisces", "text": "Saturn in Pisces grounds intuition."},
+    ],
+    "transit_houses": [
+        {"body": "Saturn", "house": 4, "text": "Work on the home foundation."},
+    ],
+    "transit_aspects": [
+        {"transit_body": "Saturn", "natal_body": "Sun", "aspect": "conjunction",
+         "orb": 0.5, "days_to_exact": 2, "text": "A steady, grounding pressure."},
+    ],
+    "missing": ["transit-sign:Mars-Aries"],
+}
+
+
+def _transit_entries_basic():
+    entries = transit_cookbook_entries(TRANSIT_SNAPSHOT, TRANSIT_COOKBOOK)
+    # Saturn grounded (sign+house); Mars missing; Saturn aspect; missing section
+    saturn = [e for e in entries if e.section == "Bodies" and "Saturn" in e.title][0]
+    assert "Saturn in Pisces grounds intuition." in saturn.text
+    assert "Over natal house 4: Work on the home foundation." in saturn.text
+    assert not saturn.missing
+    mars = [e for e in entries if e.section == "Bodies" and "Mars" in e.title][0]
+    assert mars.missing
+    asp = [e for e in entries if e.section == "Active Transits"][0]
+    assert asp.text == "A steady, grounding pressure."
+    assert "exact in 2d" in asp.subtitle, f"subtitle: {asp.subtitle!r}"
+    assert any(e.section == "Missing" for e in entries)
+
+
+check("transit entries: grounded prose, timing label, missing flagged", _transit_entries_basic)
+
+
+class _FakeSynastrySnapshot:
+    def __init__(self, bodies, aspects):
+        self.person_a = "Xephyr"
+        self.person_b = "Rainy"
+        self.bodies = bodies
+        self.aspects = aspects
+
+
+SYNASTRY_SNAPSHOT = _FakeSynastrySnapshot(
+    bodies=[
+        {"name": "Venus", "sign": "Gemini", "sign_degree": 10.0, "house_b": 7},
+        {"name": "Moon", "sign": "Cancer", "sign_degree": 5.0, "house_b": 8},
+    ],
+    aspects=[
+        {"body_a": "Moon", "body_b": "Sun", "aspect": "trine", "orb": 1.5},
+    ],
+)
+
+SYNASTRY_COOKBOOK = {
+    "synastry_houses": [
+        {"body": "Venus", "house": 7, "text": "Venus in the partner's 7th house favors partnership."},
+    ],
+    "synastry_aspects": [
+        {"body_a": "Moon", "body_b": "Sun", "aspect": "trine", "orb": 1.5,
+         "text": "A trine from the Moon eases emotional contact."},
+    ],
+    "missing": ["synastry-house:Moon-8"],
+}
+
+
+def _synastry_entries_basic():
+    entries = synastry_cookbook_entries(SYNASTRY_SNAPSHOT, SYNASTRY_COOKBOOK)
+    venus = [e for e in entries if e.section == "Bodies in Rainy's house" and "Venus" in e.title][0]
+    assert venus.text == "Venus in the partner's 7th house favors partnership."
+    assert not venus.missing
+    moon = [e for e in entries if e.section == "Bodies in Rainy's house" and "Moon" in e.title][0]
+    assert moon.missing
+    asp = [e for e in entries if e.section == "Cross Aspects"][0]
+    assert asp.text == "A trine from the Moon eases emotional contact."
+    assert [e.section for e in entries if e.missing] == ["Bodies in Rainy's house", "Missing"]
+
+
+check("synastry entries: grounded prose + person-B section, missing flagged", _synastry_entries_basic)
 
 
 print(f"\n{passed} passed, {failed} failed")

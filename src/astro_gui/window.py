@@ -35,6 +35,8 @@ from astro_gui.renderers.calendar_renderer import (
 from astro_gui.renderers.cookbook_renderer import (
     build_cookbook_list,
     natal_cookbook_entries,
+    transit_cookbook_entries,
+    synastry_cookbook_entries,
 )
 from astro_text.symbols import symbol_for_body, symbol_for_sign, symbol_for_aspect
 from astro_text.format import format_degree
@@ -741,7 +743,9 @@ class MainWindow(Gtk.ApplicationWindow):
         cb_controls.set_margin_start(6)
         cb_controls.set_margin_end(6)
         cb_controls.append(Gtk.Label(label="Mode:"))
-        self._cookbook_mode = Gtk.DropDown.new_from_strings(["Natal"])
+        self._cookbook_mode = Gtk.DropDown.new_from_strings(
+            ["Natal", "Transit", "Synastry"]
+        )
         self._cookbook_mode.set_selected(0)
         cb_controls.append(self._cookbook_mode)
         btn_cb_go = Gtk.Button(label="Update")
@@ -1199,9 +1203,11 @@ class MainWindow(Gtk.ApplicationWindow):
     def _refresh_cookbook(self):
         """Build the Cookbook tab: selectable placements with corpus prose.
 
-        Natal mode (the only mode for now): builds a natal snapshot via
-        the cookbook package and looks up grounded corpus phrases. The
-        list is selectable; the detail pane shows the prose. Missing
+        Modes: Natal (positions + natal aspects), Transit (active
+        transits now, priority-scored — uses the Transit tab's date),
+        Synastry (A vs B cross aspects — uses the Synastry tab's Person B).
+        Each builds a snapshot via the cookbook package, looks up
+        grounded corpus phrases, and renders a selectable list; missing
         corpus keys are shown as explicit 'no corpus entry' rows — never
         invented.
         """
@@ -1209,20 +1215,40 @@ class MainWindow(Gtk.ApplicationWindow):
         if not person:
             self._status_bar.set_info("No person selected")
             return
+        mode = self._cookbook_mode.get_selected_item().get_string()
         try:
             self._ensure_cookbook_path()
             from astro_transit_cookbook.core import (
                 build_natal_snapshot,
                 build_natal_cookbook,
+                build_snapshot,
+                build_cookbook,
+                build_synastry_snapshot,
+                build_synastry_cookbook,
                 open_corpus,
             )
-            snapshot = build_natal_snapshot(person.get("name"))
+
             conn = open_corpus()
             try:
-                cookbook = build_natal_cookbook(snapshot, conn)
+                if mode == "Transit":
+                    date = self._transit_date.get_text().strip()
+                    snapshot = build_snapshot(person.get("name"), when=self._cookbook_when(date))
+                    cookbook = build_cookbook(snapshot, conn)
+                    entries = transit_cookbook_entries(snapshot, cookbook)
+                    label = f"{person.get('name')} on {snapshot.observed_at[:10]}"
+                elif mode == "Synastry":
+                    person_b = self._selected_person_b_name()
+                    snapshot = build_synastry_snapshot(person.get("name"), person_b)
+                    cookbook = build_synastry_cookbook(snapshot, conn)
+                    entries = synastry_cookbook_entries(snapshot, cookbook)
+                    label = f"{person.get('name')} vs {person_b}"
+                else:  # Natal
+                    snapshot = build_natal_snapshot(person.get("name"))
+                    cookbook = build_natal_cookbook(snapshot, conn)
+                    entries = natal_cookbook_entries(snapshot, cookbook)
+                    label = person.get("name")
             finally:
                 conn.close()
-            entries = natal_cookbook_entries(snapshot, cookbook)
             self._cookbook_entries = entries
             view = build_cookbook_list(entries)
             child = self._cookbook_view_box.get_first_child()
@@ -1231,10 +1257,29 @@ class MainWindow(Gtk.ApplicationWindow):
                 child = self._cookbook_view_box.get_first_child()
             self._cookbook_view_box.append(view)
             self._status_bar.set_info(
-                f"Cookbook for {person.get('name')} — {len(entries)} placements"
+                f"Cookbook ({mode}) for {label} — {len(entries)} placements"
             )
         except Exception as exc:
             self._status_bar.set_info(f"Cookbook error: {exc}")
+
+    def _cookbook_when(self, date: str):
+        """Parse a YYYY-MM-DD transit date into a tz-aware datetime (noop-ish)."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Los_Angeles")
+        if date:
+            try:
+                return datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=tz)
+            except ValueError:
+                pass
+        return datetime.now(tz)
+
+    def _selected_person_b_name(self) -> str:
+        """Resolve the synastry Person B dropdown to a library person name."""
+        selected = self._synastry_dropdown.get_selected_item()
+        if selected:
+            return selected.get_string()
+        return "Rainy"
 
     def _load_synastry_chart(self, person_a, person_b):
         """Fetch synastry data and render two-ring synastry wheel."""

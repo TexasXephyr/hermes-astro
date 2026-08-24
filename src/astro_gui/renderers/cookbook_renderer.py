@@ -127,6 +127,128 @@ def natal_cookbook_entries(snapshot, cookbook: dict) -> list[CookbookEntry]:
     return entries
 
 
+def _timing_label(days) -> str:
+    """'exact today' / 'exact in 2d' / 'exact 3d ago' from days_to_exact."""
+    try:
+        d = int(days)
+    except (TypeError, ValueError):
+        return ""
+    if d == 0:
+        return "exact today"
+    if d > 0:
+        return f"exact in {d}d"
+    return f"exact {abs(d)}d ago"
+
+
+def transit_cookbook_entries(snapshot, cookbook: dict) -> list[CookbookEntry]:
+    """Build the ordered entry list for a transit snapshot + cookbook.
+
+    Sections: Bodies (transiting body in sign / over natal house),
+    Active Transits, Missing.
+    """
+    entries: list[CookbookEntry] = []
+
+    by_sign = {e["body"]: e for e in cookbook.get("transit_signs", [])}
+    by_house = {e["body"]: e for e in cookbook.get("transit_houses", [])}
+
+    for b in snapshot.bodies:
+        name = b.get("name", "?")
+        sign = b.get("sign", "")
+        sign_name = _glyph_sign(sign)
+        house = b.get("natal_house")
+        retro = " (R)" if b.get("retrograde") else ""
+        deg = b.get("sign_degree", "")
+
+        sign_entry = by_sign.get(name)
+        house_entry = by_house.get(name)
+
+        title = f"{_glyph_body(name)} in {sign_name}"
+        subtitle = f"over natal house {house} · {deg}°{retro}" if house else f"{deg}°{retro}"
+        prose_parts = []
+        if sign_entry:
+            prose_parts.append(sign_entry["text"])
+        if house_entry:
+            prose_parts.append(f"Over natal house {house}: {house_entry['text']}")
+        if not prose_parts:
+            entries.append(CookbookEntry(
+                title=title, subtitle=subtitle,
+                text="No corpus entry for this placement — do not guess.",
+                section="Bodies", missing=True,
+            ))
+        else:
+            entries.append(CookbookEntry(
+                title=title, subtitle=subtitle,
+                text="\n\n".join(prose_parts), section="Bodies",
+            ))
+
+    for a in cookbook.get("transit_aspects", []):
+        title = f"{_glyph_body(a['transit_body'])} {_glyph_aspect(a['aspect'])} {_glyph_body(a['natal_body'])}"
+        timing = _timing_label(a.get("days_to_exact"))
+        subtitle = f"Orb {a['orb']}° · {timing}".strip(" ·")
+        entries.append(CookbookEntry(
+            title=title, subtitle=subtitle, text=a["text"], section="Active Transits",
+        ))
+
+    for key in cookbook.get("missing", []):
+        entries.append(CookbookEntry(
+            title=key, subtitle="",
+            text="No corpus entry for this placement — do not guess.",
+            section="Missing", missing=True,
+        ))
+
+    return entries
+
+
+def synastry_cookbook_entries(snapshot, cookbook: dict) -> list[CookbookEntry]:
+    """Build the ordered entry list for a synastry snapshot + cookbook.
+
+    Sections: Bodies in B's house, Cross Aspects, Missing.
+    """
+    entries: list[CookbookEntry] = []
+
+    person_b = getattr(snapshot, "person_b", "Partner")
+    by_house = {e["body"]: e for e in cookbook.get("synastry_houses", [])}
+
+    for b in snapshot.bodies:
+        name = b.get("name", "?")
+        sign = b.get("sign", "")
+        sign_name = _glyph_sign(sign)
+        house = b.get("house_b")
+        deg = b.get("sign_degree", "")
+
+        house_entry = by_house.get(name)
+
+        title = f"{_glyph_body(name)} in {person_b}'s house {house}"
+        subtitle = f"{sign_name} · {deg}°"
+        if house_entry:
+            entries.append(CookbookEntry(
+                title=title, subtitle=subtitle,
+                text=house_entry["text"], section=f"Bodies in {person_b}'s house",
+            ))
+        else:
+            entries.append(CookbookEntry(
+                title=title, subtitle=subtitle,
+                text="No corpus entry for this placement — do not guess.",
+                section=f"Bodies in {person_b}'s house", missing=True,
+            ))
+
+    for a in cookbook.get("synastry_aspects", []):
+        title = f"{_glyph_body(a['body_a'])} {_glyph_aspect(a['aspect'])} {_glyph_body(a['body_b'])}"
+        subtitle = f"Orb {a['orb']}°"
+        entries.append(CookbookEntry(
+            title=title, subtitle=subtitle, text=a["text"], section="Cross Aspects",
+        ))
+
+    for key in cookbook.get("missing", []):
+        entries.append(CookbookEntry(
+            title=key, subtitle="",
+            text="No corpus entry for this placement — do not guess.",
+            section="Missing", missing=True,
+        ))
+
+    return entries
+
+
 def _section_row(title: str) -> Gtk.ListBoxRow:
     """A non-selectable section header row."""
     label = Gtk.Label(label=title)
