@@ -285,5 +285,42 @@ def _angle_markup():
 check("angle markup: label + sign + longitude", _angle_markup)
 
 
+# ------------------------------------------------------------------
+# 5. Window wiring regression: _attach_hover must receive callables
+# ------------------------------------------------------------------
+def _attach_hover_callables():
+    """The hover handler calls hotspots_getter() and ctx_getter(), so
+    _attach_hover must be given callables — passing a dict directly
+    raises TypeError on every motion and the panel always clears
+    (regression: 2026-08-24, hover appeared dead in the real app)."""
+    from astro_gui.window import MainWindow
+
+    captured = []
+
+    def spy(self, picture, panel, hotspots_getter, ctx_getter):
+        captured.append((picture, panel, hotspots_getter, ctx_getter))
+
+    original = MainWindow._attach_hover
+    MainWindow._attach_hover = spy
+    try:
+        w = MainWindow()
+        try:
+            assert len(captured) == 3, f"expected 3 wheel attach calls, got {len(captured)}"
+            for picture, panel, hotspots_getter, ctx_getter in captured:
+                assert callable(hotspots_getter), "hotspots_getter not callable"
+                assert callable(ctx_getter), "ctx_getter not callable"
+                # The getters must return the window's live state
+                assert isinstance(hotspots_getter(), list)
+                assert isinstance(ctx_getter(), dict)
+        finally:
+            w.close()
+    finally:
+        MainWindow._attach_hover = original
+
+
+check("window wiring: _attach_hover gets callables for all 3 wheels",
+      _attach_hover_callables)
+
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

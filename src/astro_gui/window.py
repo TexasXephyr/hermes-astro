@@ -605,7 +605,7 @@ class MainWindow(Gtk.ApplicationWindow):
         notebook.append_page(self._natal_paned, Gtk.Label(label="Natal Wheel"))
         self._attach_hover(self._natal_picture, self._natal_hover_panel,
                            lambda: self._natal_hotspots,
-                           self._natal_hover_ctx)
+                           lambda: self._natal_hover_ctx)
 
         # --- Tab 2: Transit Wheel ---
         self._transit_scroll, self._transit_picture = self._make_wheel_view()
@@ -671,7 +671,7 @@ class MainWindow(Gtk.ApplicationWindow):
         notebook.append_page(self._transit_paned, Gtk.Label(label="Transit Wheel"))
         self._attach_hover(self._transit_picture, self._transit_hover_panel,
                            lambda: self._transit_hotspots,
-                           self._transit_hover_ctx)
+                           lambda: self._transit_hover_ctx)
 
         # --- Tab 3: Synastry Wheel ---
         self._synastry_scroll, self._synastry_picture = self._make_wheel_view()
@@ -702,7 +702,7 @@ class MainWindow(Gtk.ApplicationWindow):
         notebook.append_page(self._synastry_paned, Gtk.Label(label="Synastry Wheel"))
         self._attach_hover(self._synastry_picture, self._synastry_hover_panel,
                            lambda: self._synastry_hotspots,
-                           self._synastry_hover_ctx)
+                           lambda: self._synastry_hover_ctx)
 
         # --- Tab 4: Natal Table ---
         self._natal_table_scroll, self._natal_table_picture = self._make_wheel_view()
