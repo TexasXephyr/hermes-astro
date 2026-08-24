@@ -18,7 +18,8 @@ class PersonDialog(Gtk.Dialog):
 
     Fields: Name, Birth Date (YYYY-MM-DD), Birth Time (HH:MM:SS),
     Timezone (IANA), Latitude, Longitude, plus a Location search that
-    geocodes via Nominatim and fills Latitude/Longitude. Validation
+    geocodes via Nominatim and fills Latitude/Longitude and, when it
+    can, the IANA Timezone (reverse-geocode fallback). Validation
     errors are shown in an error label and keep the dialog open.
     Geocoding failures (network, no results, invalid response) are
     shown in a search label and never close the dialog.
@@ -59,9 +60,6 @@ class PersonDialog(Gtk.Dialog):
             ("Name", self._name_entry),
             ("Birth Date (YYYY-MM-DD)", self._date_entry),
             ("Birth Time (HH:MM:SS)", self._time_entry),
-            ("Timezone (IANA)", self._tz_entry),
-            ("Latitude", self._lat_entry),
-            ("Longitude", self._lon_entry),
         ]
         for i, (label, entry) in enumerate(rows):
             lbl = Gtk.Label(label=label)
@@ -69,7 +67,9 @@ class PersonDialog(Gtk.Dialog):
             grid.attach(lbl, 0, i, 1, 1)
             grid.attach(entry, 1, i, 1, 1)
 
-        # Location search row: geocodes via Nominatim and fills lat/lon.
+        # Location search row sits between Birth Time and the fields it
+        # fills, so the fill-then-review flow reads top to bottom:
+        # Location search, Timezone, Latitude, Longitude.
         search_row = len(rows)
         self._location_entry = Gtk.Entry()
         self._location_entry.set_placeholder_text("e.g. Portland, OR")
@@ -89,12 +89,25 @@ class PersonDialog(Gtk.Dialog):
         self._search_label.set_xalign(0.0)
         grid.attach(self._search_label, 0, search_row + 1, 3, 1)
 
+        # Fields the search fills, listed right below it for review.
+        row = search_row + 2
+        for label, entry in (
+            ("Timezone (IANA)", self._tz_entry),
+            ("Latitude", self._lat_entry),
+            ("Longitude", self._lon_entry),
+        ):
+            lbl = Gtk.Label(label=label)
+            lbl.set_xalign(0.0)
+            grid.attach(lbl, 0, row, 1, 1)
+            grid.attach(entry, 1, row, 1, 1)
+            row += 1
+
         self._error_label = Gtk.Label(label="")
         self._error_label.set_visible(False)
         self._error_label.add_css_class("error")
         self._error_label.set_wrap(True)
         self._error_label.set_xalign(0.0)
-        grid.attach(self._error_label, 0, search_row + 2, 3, 1)
+        grid.attach(self._error_label, 0, row, 3, 1)
 
         content.append(grid)
 
@@ -126,13 +139,18 @@ class PersonDialog(Gtk.Dialog):
     # Location search (Nominatim geocoding)
     # ------------------------------------------------------------------
     NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+    REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
     USER_AGENT = "astro-gui/0.5 (personal use)"
+    GEO_TIMEOUT = 10
 
     def _on_search_clicked(self, _widget=None):
-        """Geocode the Location entry and fill Latitude/Longitude.
+        """Geocode the Location entry and fill Latitude/Longitude/Timezone.
 
-        Failures (network, no results, invalid response) are shown in
-        the search label; the dialog is never closed or crashed.
+        One Nominatim search request per click, then (only when the
+        search result lacks a usable timezone) one reverse-geocode
+        request for the same coordinates. Failures (network, no
+        results, invalid response) are shown in the search label; the
+        dialog is never closed or crashed.
         """
         query = self._location_entry.get_text().strip()
         if not query:
@@ -147,18 +165,30 @@ class PersonDialog(Gtk.Dialog):
         if result is None:
             self._set_search_message("No results for that location.", error=True)
             return
-        lat, lon = result
+        lat, lon, tz = result
         self._lat_entry.set_text(f"{lat:.6f}")
         self._lon_entry.set_text(f"{lon:.6f}")
-        self._set_search_message(f"Found: {lat:.6f}, {lon:.6f}", error=False)
+        if tz is not None:
+            self._tz_entry.set_text(tz)
+            self._set_search_message(f"Found: {lat:.6f}, {lon:.6f} ({tz})", error=False)
+        else:
+            self._set_search_message(
+                f"Found: {lat:.6f}, {lon:.6f} \u2014 could not determine timezone",
+                error=True,
+            )
 
     def _geocode(self, query):
-        """Return (lat, lon) floats for query, or None when no results."""
+        """Return (lat, lon, tz) for query, or None when no results.
+
+        lat/lon are floats; tz is a validated IANA timezone string from
+        the search result when present, else a reverse-geocode attempt,
+        else None (caller leaves the timezone field unchanged).
+        """
         params = urllib.parse.urlencode({"format": "json", "q": query, "limit": 1})
         url = f"{self.NOMINATIM_URL}?{params}"
         request = urllib.request.Request(url, headers={"User-Agent": self.USER_AGENT})
         try:
-            with urllib.request.urlopen(request, timeout=10) as resp:
+            with urllib.request.urlopen(request, timeout=self.GEO_TIMEOUT) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             raise RuntimeError(f"Nominatim HTTP {exc.code}") from exc
@@ -180,7 +210,40 @@ class PersonDialog(Gtk.Dialog):
             raise RuntimeError("Invalid coordinates from Nominatim.") from exc
         if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
             raise RuntimeError("Invalid coordinates from Nominatim.")
-        return lat, lon
+        tz = self._valid_timezone(hit.get("timezone"))
+        if tz is None:
+            tz = self._reverse_timezone(lat, lon)
+        return lat, lon, tz
+
+    def _reverse_timezone(self, lat, lon):
+        """Return a validated IANA timezone from reverse geocoding, or None.
+
+        Nominatim reverse results usually omit the timezone field, so
+        this routinely returns None; the caller then leaves the
+        timezone unchanged and notes it in the search label.
+        """
+        params = urllib.parse.urlencode(
+            {"format": "json", "lat": f"{lat:.6f}", "lon": f"{lon:.6f}", "zoom": 18}
+        )
+        url = f"{self.REVERSE_URL}?{params}"
+        request = urllib.request.Request(url, headers={"User-Agent": self.USER_AGENT})
+        try:
+            with urllib.request.urlopen(request, timeout=self.GEO_TIMEOUT) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return self._valid_timezone(payload.get("timezone"))
+
+    def _valid_timezone(self, value):
+        """Return value as a timezone string when it is a known IANA zone, else None."""
+        if not isinstance(value, str) or not value.strip():
+            return None
+        candidate = value.strip()
+        if candidate not in available_timezones():
+            return None
+        return candidate
 
     def _set_search_message(self, message, error=False):
         self._search_label.set_text(message)

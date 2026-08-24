@@ -187,8 +187,15 @@ class _FakeResponse:
         return False
 
 
-def _fake_urlopen(payload):
+def _fake_urlopen(payload, responses=None):
+    """Patch for urlopen. payload is the search response; responses is an
+    optional list of reverse-geocode responses consumed in order after
+    the search (one reverse call per missing timezone)."""
     def opener(request, timeout=None):
+        if request.full_url.startswith(PersonDialog.REVERSE_URL):
+            if responses:
+                return _FakeResponse(responses.pop(0))
+            return _FakeResponse({})
         return _FakeResponse(payload)
     return opener
 
@@ -206,6 +213,7 @@ def _search_fills_coords():
     assert d._lon_entry.get_text() == "-122.678400", d._lon_entry.get_text()
     assert d._search_label.get_visible() is True
     assert "Found" in d._search_label.get_text()
+    assert "could not determine timezone" in d._search_label.get_text()
     # Validation still works with the filled values
     d.response(Gtk.ResponseType.OK)
     values = d.get_values()
@@ -216,6 +224,89 @@ def _search_fills_coords():
 
 
 check("location search fills lat/lon", _search_fills_coords)
+
+
+def _search_fills_timezone_from_hit() -> None:
+    """Search hit carries timezone -> fill it, no reverse request."""
+    d = PersonDialog()
+    _fill(d, tz="Europe/Paris")
+    d._location_entry.set_text("Paris, France")
+    opener = _fake_urlopen(
+        [{"lat": "48.8566", "lon": "2.3522", "timezone": "Europe/Paris"}],
+    )
+    with unittest.mock.patch(
+        "astro_gui.widgets.person_dialog.urllib.request.urlopen",
+        unittest.mock.Mock(wraps=opener),
+    ) as mock_urlopen:
+        d._on_search_clicked()
+    mock_urlopen.assert_called_once()
+    assert d._tz_entry.get_text() == "Europe/Paris"
+    assert "could not determine" not in d._search_label.get_text()
+    assert "Europe/Paris" in d._search_label.get_text()
+    d.destroy()
+
+
+check("search result timezone fills the tz field", _search_fills_timezone_from_hit)
+
+
+def _search_invalid_timezone_not_filled() -> None:
+    """Invalid timezone from Nominatim is not written to the field."""
+    d = PersonDialog()
+    _fill(d, tz="America/Los_Angeles")
+    d._location_entry.set_text("Mars Colony")
+    with unittest.mock.patch(
+        "astro_gui.widgets.person_dialog.urllib.request.urlopen",
+        _fake_urlopen([{"lat": "45.5", "lon": "-122.6", "timezone": "Mars/Olympus"}]),
+    ):
+        d._on_search_clicked()
+    assert d._tz_entry.get_text() == "America/Los_Angeles", "invalid tz must not overwrite"
+    assert "could not determine timezone" in d._search_label.get_text()
+    d.destroy()
+
+
+check("invalid tz from Nominatim does not overwrite the field", _search_invalid_timezone_not_filled)
+
+
+def _search_reverse_timezone_fallback() -> None:
+    """No timezone on search hit -> one reverse request fills it."""
+    d = PersonDialog()
+    _fill(d, tz="UTC")
+    d._location_entry.set_text("Portland, OR")
+    opener = _fake_urlopen(
+        [{"lat": "45.5152", "lon": "-122.6784"}],
+        responses=[{"timezone": "America/Los_Angeles"}],
+    )
+    with unittest.mock.patch(
+        "astro_gui.widgets.person_dialog.urllib.request.urlopen",
+        unittest.mock.Mock(wraps=opener),
+    ) as mock_urlopen:
+        d._on_search_clicked()
+    # Search (no tz) + one reverse request
+    assert mock_urlopen.call_count == 2
+    assert d._tz_entry.get_text() == "America/Los_Angeles"
+    assert "could not determine" not in d._search_label.get_text()
+    d.destroy()
+
+
+check("reverse geocode fallback fills timezone", _search_reverse_timezone_fallback)
+
+
+def _search_reverse_network_error_keeps_timezone() -> None:
+    """Reverse failure leaves the timezone field untouched, notes it."""
+    d = PersonDialog()
+    _fill(d, tz="America/New_York")
+    d._location_entry.set_text("New York, NY")
+    with unittest.mock.patch(
+        "astro_gui.widgets.person_dialog.urllib.request.urlopen",
+        _fake_urlopen([{"lat": 40.7128, "lon": -74.0060}]),
+    ):
+        d._on_search_clicked()
+    assert d._tz_entry.get_text() == "America/New_York"
+    assert "could not determine timezone" in d._search_label.get_text()
+    d.destroy()
+
+
+check("reverse failure keeps timezone and shows note", _search_reverse_network_error_keeps_timezone)
 
 
 def _search_no_results():
