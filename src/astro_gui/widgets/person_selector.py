@@ -141,6 +141,21 @@ class PersonSelector(Gtk.Box):
             return self._people[idx]
         return None
 
+    def select_person_by_id(self, person_id):
+        """Select a person by id, emitting person-changed if found.
+
+        Returns True when the selection changed, False when the id was not
+        found or was already selected. Used by document-set restore to
+        re-open the last active person on startup.
+        """
+        for idx, p in enumerate(self._people):
+            if p.get("id") == person_id:
+                if self._dropdown.get_selected() == idx:
+                    return False
+                self._dropdown.set_selected(idx)
+                return True
+        return False
+
     def refresh(self):
         """Reload the people list from the API."""
         self._load_people()

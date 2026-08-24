@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, GObject, Gdk
+from gi.repository import Gtk, GObject, Gdk, Gio
 
 from typing import Tuple
 
 from astro_api_client import AstroClient
 from astro_analyze.scoring import planet_relative_values
+from astro_gui.persistence import DocumentSetStore
 from astro_gui.widgets.person_selector import PersonSelector
 from astro_gui.widgets.status_bar import StatusBar
 from astro_display import WheelRenderer, TableRenderer
@@ -46,6 +47,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self._table_renderer = TableRenderer()
         self._selected_person = None
         self._all_people = []
+        self._doc_sets = DocumentSetStore()
+        self._restoring = False  # suppress auto-save while applying a set
 
         # Root vertical box
         root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -80,10 +83,24 @@ class MainWindow(Gtk.ApplicationWindow):
         # Fetch people list for synastry dropdown and tracking
         self._fetch_all_people()
 
+        # Auto-save the current document set when the window closes
+        self.connect("close-request", self._on_close_request)
+
+        # Window actions backing the File menu (win.save-document-set / win.load-document-set)
+        save_action = Gio.SimpleAction.new("save-document-set", None)
+        save_action.connect("activate", self._on_save_set_as)
+        self.add_action(save_action)
+        load_action = Gio.SimpleAction.new("load-document-set", None)
+        load_action.connect("activate", self._on_load_set)
+        self.add_action(load_action)
+
         # Trigger initial chart load now that all widgets exist and handler is connected
         first_person = self._person_selector.get_selected_person()
         if first_person:
             self._on_person_changed(self._person_selector, first_person)
+
+        # Restore the last active person and their saved document set
+        self._restore_session()
 
     # ------------------------------------------------------------------
     # Sidebar
@@ -130,6 +147,219 @@ class MainWindow(Gtk.ApplicationWindow):
         sidebar_box.append(spacer)
 
         return sidebar_box
+
+    # ------------------------------------------------------------------
+    # Document-set persistence
+    # ------------------------------------------------------------------
+    def _transit_grid_view(self):
+        """The transit grid filter box (unwraps the ScrolledWindow's Viewport)."""
+        child = self._transit_grid_scroll.get_child()
+        if child is None:
+            return None
+        # Gtk.ScrolledWindow wraps its child in a Viewport
+        if hasattr(child, "get_child") and not hasattr(child, "filter_row"):
+            child = child.get_child()
+        if child is not None and hasattr(child, "filter_row"):
+            return child
+        return None
+
+    def _capture_document_set(self) -> dict:
+        """Snapshot the current UI state into a config dict."""
+        config = {
+            "version": 1,
+            "current_tab": self._notebook.get_current_page(),
+            "transit_date": self._transit_date.get_text(),
+            "transit_time": self._transit_time.get_text(),
+            "transit_lat": self._transit_lat.get_text(),
+            "transit_lon": self._transit_lon.get_text(),
+            "aspect_mode": self._transit_aspect_mode.get_selected_item().get_string(),
+        }
+        # Transit grid filter state (point / aspect / sign), if present
+        grid = self._transit_grid_view()
+        if grid is not None:
+            fr = grid.filter_row
+            config["grid_filter"] = {
+                "point": fr.point_entry.get_text(),
+                "point_side": fr.point_side_dropdown.get_selected_item().get_string(),
+                "aspect": fr.aspect_dropdown.get_selected_item().get_string(),
+                "sign_side": fr.sign_side_dropdown.get_selected_item().get_string(),
+                "sign": fr.sign_dropdown.get_selected_item().get_string(),
+            }
+        return config
+
+    def _apply_document_set(self, config: dict):
+        """Restore UI state from a config dict (best-effort, tolerant)."""
+        if not isinstance(config, dict):
+            return
+        self._restoring = True
+        try:
+            if "current_tab" in config:
+                try:
+                    page = int(config["current_tab"])
+                    if 0 <= page < self._notebook.get_n_pages():
+                        self._notebook.set_current_page(page)
+                except (TypeError, ValueError):
+                    pass
+            if "transit_date" in config:
+                self._transit_date.set_text(str(config["transit_date"]))
+            if "transit_time" in config:
+                self._transit_time.set_text(str(config["transit_time"]))
+            if "transit_lat" in config:
+                self._transit_lat.set_text(str(config["transit_lat"]))
+            if "transit_lon" in config:
+                self._transit_lon.set_text(str(config["transit_lon"]))
+            if "aspect_mode" in config:
+                self._set_aspect_mode(str(config["aspect_mode"]))
+            # Transit grid filter state
+            grid = self._transit_grid_view()
+            if grid is not None:
+                fr = grid.filter_row
+                gf = config.get("grid_filter") or {}
+                if "point" in gf:
+                    fr.point_entry.set_text(str(gf["point"]))
+                if "point_side" in gf:
+                    self._set_dropdown_by_string(fr.point_side_dropdown, str(gf["point_side"]))
+                if "aspect" in gf:
+                    self._set_dropdown_by_string(fr.aspect_dropdown, str(gf["aspect"]))
+                if "sign_side" in gf:
+                    self._set_dropdown_by_string(fr.sign_side_dropdown, str(gf["sign_side"]))
+                if "sign" in gf:
+                    self._set_dropdown_by_string(fr.sign_dropdown, str(gf["sign"]))
+        finally:
+            self._restoring = False
+
+    @staticmethod
+    def _set_dropdown_by_string(dropdown: Gtk.DropDown, value: str):
+        """Select a DropDown item by its string value; no-op if absent."""
+        model = dropdown.get_model()
+        if model is None:
+            return
+        for i in range(model.get_n_items()):
+            if model.get_string(i) == value:
+                dropdown.set_selected(i)
+                return
+
+    def _set_aspect_mode(self, value: str):
+        """Select the transit aspect-mode DropDown by value; no-op if absent."""
+        self._set_dropdown_by_string(self._transit_aspect_mode, value)
+
+    def _save_current_set(self, person_id: int):
+        """Auto-save the current UI state as the person's default set."""
+        try:
+            self._doc_sets.save_default(person_id, self._capture_document_set())
+        except Exception as exc:
+            self._status_bar.set_info(f"Document set save error: {exc}")
+
+    def _restore_person_set(self, person_id: int):
+        """Load a person's saved default set, or the default layout."""
+        config = self._doc_sets.load_default(person_id)
+        if config is None:
+            config = {"version": 1, "current_tab": self.PAGE_NATAL_WHEEL}
+        self._apply_document_set(config)
+
+    def _restore_session(self):
+        """Restore the last active person and their saved document set."""
+        try:
+            last_id = self._doc_sets.load_last_active()
+        except Exception:
+            last_id = None
+        if last_id is not None:
+            self._person_selector.select_person_by_id(last_id)
+        # Apply the (possibly just-loaded) person's saved set
+        person = self._person_selector.get_selected_person()
+        if person is not None:
+            self._restore_person_set(person.get("id"))
+
+    def _on_close_request(self, *args):
+        """Auto-save the current document set before the window closes."""
+        person = self._selected_person
+        if person is not None:
+            self._save_current_set(person.get("id"))
+        return False  # allow the close to proceed
+
+    def _on_save_set_as(self, *args):
+        """File -> Save Document Set As...: prompt for a name and snapshot."""
+        person = self._selected_person
+        if person is None:
+            self._status_bar.set_info("No person selected")
+            return
+        dialog = Gtk.Dialog(
+            transient_for=self,
+            modal=True,
+            title="Save Document Set As...",
+        )
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Save", Gtk.ResponseType.OK)
+        content = dialog.get_content_area()
+        content.set_spacing(6)
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        content.set_margin_start(12)
+        content.set_margin_end(12)
+        content.append(Gtk.Label(label="Set name:"))
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("e.g. Morning check")
+        content.append(entry)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+        dialog.connect("response", self._on_save_set_response, entry, person)
+        dialog.present()
+
+    def _on_save_set_response(self, dialog, response, entry, person):
+        if response == Gtk.ResponseType.OK:
+            name = entry.get_text().strip()
+            if name:
+                try:
+                    self._doc_sets.save_set(
+                        person.get("id"), name, self._capture_document_set()
+                    )
+                    self._status_bar.set_info(f"Saved document set '{name}'")
+                except Exception as exc:
+                    self._status_bar.set_info(f"Document set save error: {exc}")
+        dialog.destroy()
+
+    def _on_load_set(self, *args):
+        """File -> Load Document Set...: choose a saved snapshot to apply."""
+        person = self._selected_person
+        if person is None:
+            self._status_bar.set_info("No person selected")
+            return
+        sets = self._doc_sets.list_sets(person.get("id"))
+        if not sets:
+            self._status_bar.set_info("No saved document sets for this person")
+            return
+        dialog = Gtk.Dialog(
+            transient_for=self,
+            modal=True,
+            title="Load Document Set...",
+        )
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Load", Gtk.ResponseType.OK)
+        content = dialog.get_content_area()
+        content.set_spacing(6)
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        content.set_margin_start(12)
+        content.set_margin_end(12)
+        content.append(Gtk.Label(label="Saved sets:"))
+        names = Gtk.StringList.new([s["name"] for s in sets])
+        dropdown = Gtk.DropDown(model=names)
+        dropdown.set_hexpand(True)
+        content.append(dropdown)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+        dialog.connect("response", self._on_load_set_response, dropdown, sets, person)
+        dialog.present()
+
+    def _on_load_set_response(self, dialog, response, dropdown, sets, person):
+        if response == Gtk.ResponseType.OK:
+            idx = dropdown.get_selected()
+            if 0 <= idx < len(sets):
+                config = self._doc_sets.load_set(person.get("id"), sets[idx]["name"])
+                if config is not None:
+                    self._apply_document_set(config)
+                    self._status_bar.set_info(f"Loaded document set '{sets[idx]['name']}'")
+                else:
+                    self._status_bar.set_info("Document set could not be loaded")
+        dialog.destroy()
 
     # ------------------------------------------------------------------
     # Notebook / viewport
@@ -369,6 +599,9 @@ class MainWindow(Gtk.ApplicationWindow):
     # Chart loading
     # ------------------------------------------------------------------
     def _on_person_changed(self, selector, person_dict):
+        # Auto-save the previous person's document set before switching
+        if self._selected_person is not None and not self._restoring:
+            self._save_current_set(self._selected_person.get("id"))
         self._selected_person = person_dict
         name = person_dict.get("name", "Unknown")
         self._status_bar.set_info(f"Loading chart for {name}...")
@@ -390,6 +623,17 @@ class MainWindow(Gtk.ApplicationWindow):
                 next_idx = (i + 1) % len(self._all_people) if len(self._all_people) > 1 else 0
                 self._synastry_dropdown.set_selected(next_idx)
                 break
+        # Restore the newly selected person's saved document set
+        if not self._restoring:
+            self._restore_person_set(person_dict.get("id"))
+            # Re-render transit-dependent views with the restored date/filters
+            self._refresh_transit_grid()
+            self._refresh_by_planet()
+        # Track the last active person for next-session restore
+        try:
+            self._doc_sets.save_last_active(person_dict.get("id"))
+        except Exception:
+            pass
 
     def _get_chart(self, person_dict) -> dict | None:
         """Return the stored natal chart for a person, or None."""

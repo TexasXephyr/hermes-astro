@@ -4,7 +4,7 @@ import os
 import sys
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, Gdk, GObject
+from gi.repository import Gtk, Gdk, Gio, GObject
 
 from astro_gui.window import MainWindow
 
@@ -30,6 +30,19 @@ class AstroGuiApplication(Gtk.Application):
     def do_startup(self):
         Gtk.Application.do_startup(self)
         self._apply_theme()
+        self._build_menubar()
+
+    # ------------------------------------------------------------------
+    # Menubar
+    # ------------------------------------------------------------------
+    def _build_menubar(self):
+        """File menu: Save Document Set As... / Load Document Set..."""
+        menu = Gio.Menu()
+        file_menu = Gio.Menu()
+        file_menu.append("Save Document Set As...", "win.save-document-set")
+        file_menu.append("Load Document Set...", "win.load-document-set")
+        menu.append_submenu("File", file_menu)
+        self.set_menubar(menu)
 
     # ------------------------------------------------------------------
     # Theme / CSS
