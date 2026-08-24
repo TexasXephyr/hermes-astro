@@ -2,12 +2,16 @@
 
 Builds Gtk.ColumnView tables (GTK4's modern sortable list) for:
   - Natal planet table: Body, Sign, Degree, House, Dignity, Speed, Retro
-  - Transit grid: Body, Aspect, Natal, Orb, Days, Priority (sortable)
+  - Transit grid: Body, Aspect, Natal, T Sign, N Sign, Orb, Days, Priority
+    (sortable, with a filter row for point / aspect / sign)
   - By-planet aggregation: Body, Total, Count, Top Aspect, vs Natal
 
 All views are backed by Gtk.SortListModel so clicking a column header
-sorts the data. The transit grid consumes the priority-scored output
-from astro_analyze.scoring (via AstroClient.period_impact).
+sorts the data; re-clicking the same header inverts the order (GTK's
+built-in ColumnView header behavior). The transit grid consumes the
+priority-scored output from astro_analyze.scoring (via
+AstroClient.period_impact) and looks up transit/natal signs from the
+body lists passed in by the caller.
 """
 from __future__ import annotations
 
@@ -15,9 +19,50 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GObject, Gio, Pango
 
-from astro_text.symbols import symbol_for_body, symbol_for_aspect
+from astro_text.symbols import symbol_for_body, symbol_for_aspect, symbol_for_sign
 from astro_text.format import format_longitude
 from astro_text.dignity import get_dignity
+
+
+# ---------------------------------------------------------------------------
+# Formatting helpers
+# ---------------------------------------------------------------------------
+
+def format_days(days: int | float | None) -> str:
+    """Smart 'Days' formatting for the transit grid.
+
+    `days` is an integer; negative means the aspect is separating (the
+    exact date is in the past). The absolute value is shown with the two
+    largest relevant time units when under 2 days, e.g. '1d 3h', '6h 32m';
+    otherwise the integer is shown with 'd', e.g. '3d'. Separating values
+    are prefixed with 'sep ' (e.g. 'sep 1d 3h').
+    """
+    if days is None:
+        return ""
+    try:
+        raw = float(days)
+    except (TypeError, ValueError):
+        return str(days)
+    prefix = "sep " if raw < 0 else ""
+    n = abs(raw)
+    if n == 0:
+        return f"{prefix}0h"
+    if n < 2:
+        if n < 1:
+            hours = int(round(n * 24))
+            if hours < 1:
+                minutes = int(round(n * 24 * 60))
+                return f"{prefix}{minutes}m"
+            return f"{prefix}{hours}h"
+        days_part = int(n)
+        hours_part = int(round((n - days_part) * 24))
+        if hours_part >= 24:
+            days_part += 1
+            hours_part = 0
+        if hours_part:
+            return f"{prefix}{days_part}d {hours_part}h"
+        return f"{prefix}{days_part}d"
+    return f"{prefix}{int(n)}d"
 
 
 # ---------------------------------------------------------------------------
@@ -61,22 +106,39 @@ class TransitRow(GObject.Object):
     body = GObject.Property(type=str, default="")
     aspect = GObject.Property(type=str, default="")
     natal = GObject.Property(type=str, default="")
+    t_sign = GObject.Property(type=str, default="")
+    n_sign = GObject.Property(type=str, default="")
     orb = GObject.Property(type=str, default="")
     days = GObject.Property(type=str, default="")
     priority = GObject.Property(type=str, default="")
+    # Raw names (no glyphs) used by the filter row
+    body_name = GObject.Property(type=str, default="")
+    natal_name = GObject.Property(type=str, default="")
+    aspect_name = GObject.Property(type=str, default="")
+    t_sign_name = GObject.Property(type=str, default="")
+    n_sign_name = GObject.Property(type=str, default="")
     sort_orb = GObject.Property(type=float, default=0.0)
     sort_days = GObject.Property(type=int, default=0)
     sort_priority = GObject.Property(type=int, default=0)
 
-    def __init__(self, body="", aspect="", natal="", orb="", days="",
-                 priority="", sort_orb=0.0, sort_days=0, sort_priority=0, **kwargs):
+    def __init__(self, body="", aspect="", natal="", t_sign="", n_sign="",
+                 orb="", days="", priority="", body_name="", natal_name="",
+                 aspect_name="", t_sign_name="", n_sign_name="",
+                 sort_orb=0.0, sort_days=0, sort_priority=0, **kwargs):
         super().__init__(**kwargs)
         self.body = body
         self.aspect = aspect
         self.natal = natal
+        self.t_sign = t_sign
+        self.n_sign = n_sign
         self.orb = orb
         self.days = days
         self.priority = priority
+        self.body_name = body_name
+        self.natal_name = natal_name
+        self.aspect_name = aspect_name
+        self.t_sign_name = t_sign_name
+        self.n_sign_name = n_sign_name
         self.sort_orb = sort_orb
         self.sort_days = sort_days
         self.sort_priority = sort_priority
@@ -209,13 +271,119 @@ def build_planet_table(chart: dict) -> Gtk.Widget:
     return view
 
 
-def build_transit_grid(active_transits: list[dict]) -> Gtk.Widget:
-    """Transit grid: Body, Aspect, Natal, Orb, Days, Priority (sortable).
+def _sign_glyph(name: str) -> str:
+    """Glyph for a sign name, falling back to the plain name."""
+    try:
+        return symbol_for_sign(name)
+    except Exception:
+        return name
+
+
+def _sign_label(name: str) -> str:
+    """Sign cell text: glyph + name (e.g. '♌ Leo')."""
+    if not name:
+        return ""
+    return f"{_sign_glyph(name)} {name}".strip()
+
+
+class _TransitFilterState(GObject.Object):
+    """Filter state for the transit grid (GObject props so notify fires)."""
+
+    __gtype_name__ = "AstroTransitFilterState"
+
+    point = GObject.Property(type=str, default="")
+    point_side = GObject.Property(type=str, default="transit")
+    aspect = GObject.Property(type=str, default="all")
+    sign_side = GObject.Property(type=str, default="transit")
+    sign = GObject.Property(type=str, default="any")
+
+
+def _build_transit_filter_row(state) -> Gtk.Box:
+    """Filter row above the transit grid: point, natal/transit, aspect, sign.
+
+    `state` is a GObject with `point`, `point_side`, `aspect`, `sign_side`,
+    `sign` string properties. The returned box exposes the widgets as
+    attributes (`point_entry`, `point_side_dropdown`, `aspect_dropdown`,
+    `sign_side_dropdown`, `sign_dropdown`) so tests can drive them.
+    """
+    row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+    row.set_spacing(6)
+    row.set_margin_top(6)
+    row.set_margin_start(6)
+    row.set_margin_end(6)
+
+    row.append(Gtk.Label(label="Filter:"))
+
+    row.point_entry = Gtk.Entry()
+    row.point_entry.set_placeholder_text("Point (e.g. Mercury)")
+    row.point_entry.set_max_width_chars(14)
+    row.append(row.point_entry)
+
+    row.point_side_dropdown = Gtk.DropDown.new_from_strings([
+        "transit", "natal",
+    ])
+    row.point_side_dropdown.set_selected(0)
+    row.append(row.point_side_dropdown)
+
+    row.aspect_dropdown = Gtk.DropDown.new_from_strings([
+        "all", "conjunction", "opposition", "trine", "square",
+        "sextile", "quincunx",
+    ])
+    row.aspect_dropdown.set_selected(0)
+    row.append(row.aspect_dropdown)
+
+    row.sign_side_dropdown = Gtk.DropDown.new_from_strings([
+        "transit", "natal",
+    ])
+    row.sign_side_dropdown.set_selected(0)
+    row.append(row.sign_side_dropdown)
+
+    row.sign_dropdown = Gtk.DropDown.new_from_strings([
+        "any", "Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo",
+        "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces",
+    ])
+    row.sign_dropdown.set_selected(0)
+    row.append(row.sign_dropdown)
+
+    def _apply(*_args):
+        state.point = row.point_entry.get_text().strip()
+        state.point_side = row.point_side_dropdown.get_selected_item().get_string()
+        state.aspect = row.aspect_dropdown.get_selected_item().get_string()
+        state.sign_side = row.sign_side_dropdown.get_selected_item().get_string()
+        state.sign = row.sign_dropdown.get_selected_item().get_string()
+
+    row.point_entry.connect("changed", _apply)
+    row.point_side_dropdown.connect("notify::selected", _apply)
+    row.aspect_dropdown.connect("notify::selected", _apply)
+    row.sign_side_dropdown.connect("notify::selected", _apply)
+    row.sign_dropdown.connect("notify::selected", _apply)
+    _apply()
+    return row
+
+
+def build_transit_grid(active_transits: list[dict],
+                       transit_bodies: list[dict] | None = None,
+                       natal_bodies: list[dict] | None = None) -> Gtk.Widget:
+    """Transit grid: Body, Aspect, Natal, T Sign, N Sign, Orb, Days, Priority.
 
     `active_transits` is the priority-scored list from
     astro_analyze.scoring.score_active_transits (already sorted desc by
-    priority; the user can re-sort by clicking headers).
+    priority; the user can re-sort by clicking headers — re-clicking the
+    same header inverts the order, GTK's built-in behavior).
+
+    `transit_bodies` / `natal_bodies` are the body lists from the transit
+    and natal charts; they provide the sign for each planet. When omitted,
+    sign columns show '?' and the sign filter is a no-op.
+
+    The returned widget is a vertical box: a filter row (point / aspect /
+    sign) above the sortable ColumnView. The filter row is reachable as
+    `widget.filter_row` for tests.
     """
+    transit_signs = {b.get("name", ""): b.get("sign_name", "")
+                     for b in (transit_bodies or [])}
+    natal_signs = {b.get("name", ""): b.get("sign_name", "")
+                   for b in (natal_bodies or [])}
+
     rows = []
     for t in active_transits:
         tb = t.get("transiting_body", "?")
@@ -224,13 +392,22 @@ def build_transit_grid(active_transits: list[dict]) -> Gtk.Widget:
         tb_sym = symbol_for_body(tb) or tb
         nb_sym = symbol_for_body(nb) or nb
         asp_sym = symbol_for_aspect(aspect) or aspect
+        t_sign = transit_signs.get(tb, "")
+        n_sign = natal_signs.get(nb, "")
         rows.append(TransitRow(
             body=f"{tb_sym} {tb}".strip(),
             aspect=f"{asp_sym} {aspect}".strip(),
             natal=f"{nb_sym} {nb}".strip(),
+            t_sign=_sign_label(t_sign),
+            n_sign=_sign_label(n_sign),
             orb=f"{t.get('orb', 0.0):.2f}°",
-            days=str(t.get("days_to_exact", 0)),
+            days=format_days(t.get("days_to_exact", 0)),
             priority=str(t.get("priority", 0)),
+            body_name=tb,
+            natal_name=nb,
+            aspect_name=aspect,
+            t_sign_name=t_sign,
+            n_sign_name=n_sign,
             sort_orb=float(t.get("orb", 0.0)),
             sort_days=int(t.get("days_to_exact", 0)),
             sort_priority=int(t.get("priority", 0)),
@@ -240,19 +417,61 @@ def build_transit_grid(active_transits: list[dict]) -> Gtk.Widget:
     for r in rows:
         model.append(r)
 
-    sort_model = Gtk.SortListModel(model=model)
+    # Filter state + CustomFilter (re-evaluated on every filter change)
+    state = _TransitFilterState()
+
+    def _match(item):
+        if state.point:
+            if state.point_side == "transit":
+                if item.body_name != state.point:
+                    return False
+            else:
+                if item.natal_name != state.point:
+                    return False
+        if state.aspect != "all" and item.aspect_name != state.aspect:
+            return False
+        if state.sign != "any":
+            if state.sign_side == "transit":
+                if item.t_sign_name != state.sign:
+                    return False
+            else:
+                if item.n_sign_name != state.sign:
+                    return False
+        return True
+
+    filt = Gtk.CustomFilter.new(_match)
+    filter_model = Gtk.FilterListModel(model=model, filter=filt)
+
+    sort_model = Gtk.SortListModel(model=filter_model)
     selection = Gtk.SingleSelection(model=sort_model)
     view = Gtk.ColumnView(model=selection)
     view.append_column(_text_column("Body", "body", sortable=True, sorter=_string_sorter(TransitRow, "body")))
     view.append_column(_text_column("Aspect", "aspect", sortable=True, sorter=_string_sorter(TransitRow, "aspect")))
     view.append_column(_text_column("Natal", "natal", sortable=True, sorter=_string_sorter(TransitRow, "natal")))
+    view.append_column(_text_column("T Sign", "t_sign", sortable=True, sorter=_string_sorter(TransitRow, "t_sign")))
+    view.append_column(_text_column("N Sign", "n_sign", sortable=True, sorter=_string_sorter(TransitRow, "n_sign")))
     view.append_column(_text_column("Orb", "orb", sortable=True, sorter=_prop_sorter(TransitRow, "sort_orb")))
     view.append_column(_text_column("Days", "days", sortable=True, sorter=_prop_sorter(TransitRow, "sort_days")))
     view.append_column(_text_column("Priority", "priority", sortable=True, sorter=_prop_sorter(TransitRow, "sort_priority", descending=True)))
 
     # Default sort: priority descending
     sort_model.set_sorter(_prop_sorter(TransitRow, "sort_priority", descending=True))
-    return view
+
+    def _on_filter_changed(*_args):
+        filt.changed(Gtk.FilterChange.DIFFERENT)
+
+    state.connect("notify::point", _on_filter_changed)
+    state.connect("notify::point_side", _on_filter_changed)
+    state.connect("notify::aspect", _on_filter_changed)
+    state.connect("notify::sign_side", _on_filter_changed)
+    state.connect("notify::sign", _on_filter_changed)
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    box.filter_row = _build_transit_filter_row(state)
+    box.append(box.filter_row)
+    box.append(view)
+    view.set_vexpand(True)
+    return box
 
 
 def build_planet_agg_table(rows: list[dict]) -> Gtk.Widget:

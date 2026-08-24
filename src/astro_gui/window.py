@@ -374,6 +374,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self._status_bar.set_info(f"Loading chart for {name}...")
         self._load_natal_chart(person_dict)
         self._load_natal_table(person_dict)
+        # Refresh the transit grid and by-planet tabs (review items 26+27)
+        self._refresh_transit_grid()
+        self._refresh_by_planet()
         # Prefill transit lat/lon from the natal chart's location
         chart = self._get_chart(person_dict)
         if chart is not None:
@@ -486,7 +489,11 @@ class MainWindow(Gtk.ApplicationWindow):
             transit = self._client.transit(chart_id, date, time)
             impact = self._client.period_impact(chart_id, date, orb_days=7)
             active = impact.get("impact", {}).get("active_transits", [])
-            view = build_transit_grid(active)
+            view = build_transit_grid(
+                active,
+                transit_bodies=transit.get("bodies", []),
+                natal_bodies=natal_chart.get("bodies", []),
+            )
             self._transit_grid_scroll.set_child(view)
             self._status_bar.set_info(
                 f"Transit grid for {person.get('name')} on {date} — {len(active)} transits, sorted by priority"
