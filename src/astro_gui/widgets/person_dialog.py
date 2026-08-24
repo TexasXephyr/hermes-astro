@@ -33,6 +33,11 @@ class PersonDialog(Gtk.Dialog):
         if parent is not None:
             self.set_transient_for(parent)
         self.set_modal(True)
+        # The form (name/date/time/location/tz/lat/lon + search feedback +
+        # error label) needs ~489px; give it headroom so GTK never has to
+        # measure below the content's minimum (silences the Gtk-WARNING
+        # and prevents clipped fields).
+        self.set_default_size(520, 560)
 
         self._person = person  # {id, name, chart_id} or None for new
         self._chart = chart    # natal chart dict (edit prefill) or None

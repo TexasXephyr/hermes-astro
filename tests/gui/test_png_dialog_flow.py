@@ -218,6 +218,29 @@ def _normal_path_dispatches():
 check("_on_dialog_result: normal path dispatches to the callback", _normal_path_dispatches)
 
 
+def _png_callback_accepts_tuple_payload():
+    """Regression: _pick_save_path passes payload as a 1-tuple; the PNG
+    callback must unpack it (the old code did `svg = payload` and crashed
+    with 'write() argument must be str, not tuple')."""
+    w = MainWindow()
+    try:
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60"><rect width="60" height="60" fill="#1a1a1a"/></svg>'
+        path = "/tmp/png_tuple_payload_test.png"
+        w._on_png_dialog_result(path, (svg,))
+        assert os.path.exists(path), "PNG not written"
+        assert os.path.getsize(path) > 0, "PNG empty"
+        msg = w.status_bar._info_label.get_text()
+        assert msg.startswith("Exported PNG"), f"status: {msg!r}"
+    finally:
+        w.close()
+        if os.path.exists("/tmp/png_tuple_payload_test.png"):
+            os.unlink("/tmp/png_tuple_payload_test.png")
+
+
+check("_on_png_dialog_result: tuple payload (real dialog path) writes PNG",
+      _png_callback_accepts_tuple_payload)
+
+
 print(f"\nResults: {passed} passed, {failed} failed")
 if failed:
     sys.exit(1)

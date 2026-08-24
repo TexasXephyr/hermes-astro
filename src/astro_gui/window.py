@@ -1107,7 +1107,9 @@ class MainWindow(Gtk.ApplicationWindow):
             self._status_bar.set_info(f"Export error: {exc}")
 
     def _on_png_dialog_result(self, path, payload):
-        svg = payload
+        # _pick_save_path collects extra args into a tuple via *payload;
+        # the CSV callback unpacks it, so unpack here too.
+        svg = payload[0] if isinstance(payload, tuple) else payload
         import tempfile, os
         fd, tmp_svg = tempfile.mkstemp(suffix=".svg")
         try:
