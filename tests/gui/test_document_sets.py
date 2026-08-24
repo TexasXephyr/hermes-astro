@@ -102,11 +102,19 @@ def _capture_apply_roundtrip():
         w._transit_lon.set_text("-123.0868")
         w._set_aspect_mode("both")
         grid = w._transit_grid_view()
+        point_label = ""
         if grid is not None:
             fr = grid.filter_row
-            fr.point_entry.set_text("Mercury")
+            # The point filter is a dropdown of ACTIVE points: pick the first
+            # one ('All' is index 0). The captured value is the dropdown
+            # label itself ('T: Mercury'), which apply matches by string.
+            model = fr.point_dropdown.get_model()
+            assert model.get_string(0) == "All"
+            point_label = model.get_string(1)
+            fr.point_dropdown.set_selected(1)
             fr.aspect_dropdown.set_selected(1)  # conjunction
             fr.sign_dropdown.set_selected(1)  # Aries
+            fr.house_dropdown.set_selected(1)  # house 1
 
         cfg = w._capture_document_set()
         assert cfg["current_tab"] == w.PAGE_TRANSIT_GRID
@@ -116,9 +124,10 @@ def _capture_apply_roundtrip():
         assert cfg["transit_lon"] == "-123.0868"
         assert cfg["aspect_mode"] == "both"
         if "grid_filter" in cfg:
-            assert cfg["grid_filter"]["point"] == "Mercury"
+            assert cfg["grid_filter"]["point"] == point_label
             assert cfg["grid_filter"]["aspect"] == "conjunction"
             assert cfg["grid_filter"]["sign"] == "Aries"
+            assert cfg["grid_filter"]["house"] == "1"
 
         # Apply to a fresh window and verify the state lands
         w2 = MainWindow()
@@ -133,9 +142,10 @@ def _capture_apply_roundtrip():
             grid2 = w2._transit_grid_view()
             if grid2 is not None:
                 fr2 = grid2.filter_row
-                assert fr2.point_entry.get_text() == "Mercury"
+                assert fr2.point_dropdown.get_selected_item().get_string() == point_label
                 assert fr2.aspect_dropdown.get_selected_item().get_string() == "conjunction"
                 assert fr2.sign_dropdown.get_selected_item().get_string() == "Aries"
+                assert fr2.house_dropdown.get_selected_item().get_string() == "1"
         finally:
             w2.close()
     finally:

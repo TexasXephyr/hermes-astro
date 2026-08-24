@@ -2,8 +2,9 @@
 
 Builds Gtk.ColumnView tables (GTK4's modern sortable list) for:
   - Natal planet table: Body, Sign, Degree, House, Dignity, Speed, Retro
-  - Transit grid: Body, Aspect, Natal, T Sign, N Sign, Orb, Days, Priority
-    (sortable, with a filter row for point / aspect / sign)
+  - Transit grid: T Body, T Sign, T House, Aspect, N Body, N Sign, N House,
+    Orb, Days, Priority (sortable, with a filter row for point / aspect /
+    sign / house)
   - By-planet aggregation: Body, Total, Count, Top Aspect, vs Natal
 
 All views are backed by Gtk.SortListModel so clicking a column header
@@ -15,13 +16,19 @@ body lists passed in by the caller.
 """
 from __future__ import annotations
 
+import math
+import re
+
 import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GObject, Gio, Pango
+import cairo
 
-from astro_text.symbols import symbol_for_body, symbol_for_aspect, symbol_for_sign
+from astro_text.symbols import symbol_for_body, symbol_for_aspect
 from astro_text.format import format_longitude
 from astro_text.dignity import get_dignity
+from astro_text.houses import find_house
+from astro_display.glyph_data import ALL as GLYPHS
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +115,8 @@ class TransitRow(GObject.Object):
     natal = GObject.Property(type=str, default="")
     t_sign = GObject.Property(type=str, default="")
     n_sign = GObject.Property(type=str, default="")
+    t_house = GObject.Property(type=str, default="")
+    n_house = GObject.Property(type=str, default="")
     orb = GObject.Property(type=str, default="")
     days = GObject.Property(type=str, default="")
     priority = GObject.Property(type=str, default="")
@@ -117,13 +126,16 @@ class TransitRow(GObject.Object):
     aspect_name = GObject.Property(type=str, default="")
     t_sign_name = GObject.Property(type=str, default="")
     n_sign_name = GObject.Property(type=str, default="")
+    t_house_num = GObject.Property(type=int, default=0)
+    n_house_num = GObject.Property(type=int, default=0)
     sort_orb = GObject.Property(type=float, default=0.0)
     sort_days = GObject.Property(type=int, default=0)
     sort_priority = GObject.Property(type=int, default=0)
 
     def __init__(self, body="", aspect="", natal="", t_sign="", n_sign="",
-                 orb="", days="", priority="", body_name="", natal_name="",
-                 aspect_name="", t_sign_name="", n_sign_name="",
+                 t_house="", n_house="", orb="", days="", priority="",
+                 body_name="", natal_name="", aspect_name="", t_sign_name="",
+                 n_sign_name="", t_house_num=0, n_house_num=0,
                  sort_orb=0.0, sort_days=0, sort_priority=0, **kwargs):
         super().__init__(**kwargs)
         self.body = body
@@ -131,6 +143,8 @@ class TransitRow(GObject.Object):
         self.natal = natal
         self.t_sign = t_sign
         self.n_sign = n_sign
+        self.t_house = t_house
+        self.n_house = n_house
         self.orb = orb
         self.days = days
         self.priority = priority
@@ -139,6 +153,8 @@ class TransitRow(GObject.Object):
         self.aspect_name = aspect_name
         self.t_sign_name = t_sign_name
         self.n_sign_name = n_sign_name
+        self.t_house_num = t_house_num
+        self.n_house_num = n_house_num
         self.sort_orb = sort_orb
         self.sort_days = sort_days
         self.sort_priority = sort_priority
@@ -271,19 +287,207 @@ def build_planet_table(chart: dict) -> Gtk.Widget:
     return view
 
 
-def _sign_glyph(name: str) -> str:
-    """Glyph for a sign name, falling back to the plain name."""
-    try:
-        return symbol_for_sign(name)
-    except Exception:
-        return name
+# ---------------------------------------------------------------------------
+# Path-glyph rendering (LiberZodiac outlines via cairo)
+# ---------------------------------------------------------------------------
+
+_PATH_TOKEN_RE = re.compile(r"[MLHVQCZmlhvqcz]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
+_COMMAND_RE = re.compile(r"[MLHVQCZmlhvqcz]")
 
 
-def _sign_label(name: str) -> str:
-    """Sign cell text: glyph + name (e.g. '♌ Leo')."""
-    if not name:
-        return ""
-    return f"{_sign_glyph(name)} {name}".strip()
+def _parse_path(d: str):
+    """Tokenize an SVG path into command + parameter tuples.
+
+    The glyph outlines in ``astro_display.glyph_data`` only use the
+    commands M/L/H/V/C/Q/Z (uppercase and lowercase). Repeated
+    coordinate pairs after a command are split out like the SVG spec.
+    """
+    tokens = _PATH_TOKEN_RE.findall(d)
+    cmds = []
+    i = 0
+    cur = None
+    while i < len(tokens):
+        tok = tokens[i]
+        if _COMMAND_RE.fullmatch(tok):
+            cur = tok
+            i += 1
+        # else: implicit repeat of the previous command — i already points
+        # at the first coordinate, so just fall through and consume params.
+        if cur is None:
+            raise ValueError(f"path data starts with coordinate: {d!r}")
+        # Number of parameters depends on the command letter.
+        if cur in ("M", "m", "L", "l", "T", "t"):
+            n = 2
+        elif cur in ("H", "h", "V", "v"):
+            n = 1
+        elif cur in ("C", "c"):
+            n = 6
+        elif cur in ("S", "s", "Q", "q"):
+            n = 4
+        elif cur in ("Z", "z"):
+            n = 0
+        else:
+            raise ValueError(f"unsupported path command {cur!r}")
+        params = []
+        for _ in range(n):
+            if i >= len(tokens):
+                raise ValueError(f"path {cur!r} missing parameters: {d!r}")
+            params.append(float(tokens[i]))
+            i += 1
+        cmds.append((cur, params))
+    return cmds
+
+
+def _apply_glyph_path(cr, name: str, cx: float, cy: float, size: float) -> bool:
+    """Stroke/fill a named glyph path on a cairo context.
+
+    Centers the glyph at (cx, cy) scaled to ``size`` area-equivalent units
+    (mirrors the SVG wheel renderer's _path_element math). Returns False
+    when the name has no path outline in glyph_data.
+    """
+    entry = GLYPHS.get(name)
+    if entry is None:
+        return False
+    s = size / math.sqrt(entry["w"] * entry["h"])
+    dx = cx - entry["cx"] * s
+    dy = cy + entry["cy"] * s  # y-flip: font units are y-up
+
+    cr.save()
+    cr.translate(dx, dy)
+    cr.scale(s, -s)
+    cr.new_path()
+    pen = (0.0, 0.0)  # overwritten by the leading M before any relative cmd
+    for cmd, params in _parse_path(entry["path"]):
+        if cmd == "M":
+            pen = (params[0], params[1])
+            cr.move_to(*pen)
+        elif cmd == "m":
+            pen = (pen[0] + params[0], pen[1] + params[1])
+            cr.move_to(*pen)
+        elif cmd == "L":
+            pen = (params[0], params[1])
+            cr.line_to(*pen)
+        elif cmd == "l":
+            pen = (pen[0] + params[0], pen[1] + params[1])
+            cr.line_to(*pen)
+        elif cmd == "H":
+            pen = (params[0], pen[1])
+            cr.line_to(*pen)
+        elif cmd == "h":
+            pen = (pen[0] + params[0], pen[1])
+            cr.line_to(*pen)
+        elif cmd == "V":
+            pen = (pen[0], params[0])
+            cr.line_to(*pen)
+        elif cmd == "v":
+            pen = (pen[0], pen[1] + params[0])
+            cr.line_to(*pen)
+        elif cmd == "C":
+            c1 = (params[0], params[1])
+            c2 = (params[2], params[3])
+            pen = (params[4], params[5])
+            cr.curve_to(c1[0], c1[1], c2[0], c2[1], pen[0], pen[1])
+        elif cmd == "c":
+            c1 = (pen[0] + params[0], pen[1] + params[1])
+            c2 = (pen[0] + params[2], pen[1] + params[3])
+            pen = (pen[0] + params[4], pen[1] + params[5])
+            cr.curve_to(c1[0], c1[1], c2[0], c2[1], pen[0], pen[1])
+        elif cmd == "Q":
+            q = (params[0], params[1])
+            end = (params[2], params[3])
+            # Exact quadratic->cubic conversion (cairo's quadratic_to is
+            # not exposed by the gi bindings on this system).
+            c1 = (pen[0] + 2.0 / 3.0 * (q[0] - pen[0]),
+                  pen[1] + 2.0 / 3.0 * (q[1] - pen[1]))
+            c2 = (end[0] + 2.0 / 3.0 * (q[0] - end[0]),
+                  end[1] + 2.0 / 3.0 * (q[1] - end[1]))
+            cr.curve_to(c1[0], c1[1], c2[0], c2[1], end[0], end[1])
+            pen = end
+        elif cmd == "q":
+            end = (pen[0] + params[2], pen[1] + params[3])
+            q = (pen[0] + params[0], pen[1] + params[1])
+            c1 = (pen[0] + 2.0 / 3.0 * (q[0] - pen[0]),
+                  pen[1] + 2.0 / 3.0 * (q[1] - pen[1]))
+            c2 = (end[0] + 2.0 / 3.0 * (q[0] - end[0]),
+                  end[1] + 2.0 / 3.0 * (q[1] - end[1]))
+            cr.curve_to(c1[0], c1[1], c2[0], c2[1], end[0], end[1])
+            pen = end
+        elif cmd == "Z":
+            cr.close_path()
+    cr.restore()
+    return True
+
+
+class _GlyphLabel(Gtk.DrawingArea):
+    """A small DrawingArea that paints a path glyph next to a text label.
+
+    Renders the named glyph (body or sign) with cairo from the
+    LiberZodiac outlines in ``astro_display.glyph_data`` — no emoji
+    fallback — followed by the plain-text name.
+    """
+
+    __gtype_name__ = "AstroGlyphLabel"
+
+    def __init__(self, name: str = "", glyph_size: float = 18.0,
+                 glyph_color: str = "#ffffff", **kwargs):
+        super().__init__(**kwargs)
+        self._name = name
+        self._glyph_size = glyph_size
+        self._glyph_color = glyph_color
+        self.set_draw_func(self._on_draw)
+
+    def set_name(self, name: str):
+        self._name = name
+        self.queue_draw()
+
+    def _on_draw(self, area, cr, width, height):
+        # Clear (transparent) and draw the glyph path, then the label.
+        cr.set_source_rgba(0, 0, 0, 0)
+        cr.set_operator(cairo.OPERATOR_SOURCE)
+        cr.paint()
+        cr.set_operator(cairo.OPERATOR_OVER)
+        x = 4.0
+        if self._name:
+            try:
+                _apply_glyph_path(cr, self._name, x + self._glyph_size / 2.0,
+                                  height / 2.0, self._glyph_size)
+                cr.set_source_rgb(1, 1, 1)
+                cr.fill()
+            except Exception:
+                pass
+            x += self._glyph_size + 8.0
+        # Fallback text (used only when no outline exists).
+        cr.select_font_face("Liberation Sans",
+                            cairo.FONT_SLANT_NORMAL,
+                            cairo.FONT_WEIGHT_NORMAL)
+        cr.set_font_size(13)
+        cr.set_source_rgb(0.86, 0.86, 0.86)
+        cr.move_to(x, height / 2.0 + 4.5)
+        cr.show_text(self._name)
+
+
+def _setup_glyph_cell(factory, list_item, _unused=None):
+    cell = _GlyphLabel()
+    list_item.set_child(cell)
+
+
+def _bind_glyph_cell(factory, list_item, prop: str):
+    cell = list_item.get_child()
+    row = list_item.get_item()
+    cell.set_name(str(getattr(row, prop, "")))
+
+
+def _glyph_column(title: str, prop: str, sortable: bool = False,
+                  sorter: Gtk.Sorter | None = None,
+                  glyph_size: float = 18.0, glyph_color: str = "#ffffff") -> Gtk.ColumnViewColumn:
+    """A column rendered as path glyph + text (LiberZodiac outlines)."""
+    factory = Gtk.SignalListItemFactory()
+    factory.connect("setup", _setup_glyph_cell, glyph_size)
+    factory.connect("bind", _bind_glyph_cell, prop)
+    col = Gtk.ColumnViewColumn(title=title, factory=factory)
+    if sortable and sorter is not None:
+        col.set_sorter(sorter)
+    return col
 
 
 class _TransitFilterState(GObject.Object):
@@ -296,15 +500,21 @@ class _TransitFilterState(GObject.Object):
     aspect = GObject.Property(type=str, default="all")
     sign_side = GObject.Property(type=str, default="transit")
     sign = GObject.Property(type=str, default="any")
+    house_side = GObject.Property(type=str, default="transit")
+    house = GObject.Property(type=int, default=0)
 
 
-def _build_transit_filter_row(state) -> Gtk.Box:
-    """Filter row above the transit grid: point, natal/transit, aspect, sign.
+def _build_transit_filter_row(state, active_points: list[str]) -> Gtk.Box:
+    """Filter row above the transit grid: point, aspect, sign, house.
 
     `state` is a GObject with `point`, `point_side`, `aspect`, `sign_side`,
-    `sign` string properties. The returned box exposes the widgets as
-    attributes (`point_entry`, `point_side_dropdown`, `aspect_dropdown`,
-    `sign_side_dropdown`, `sign_dropdown`) so tests can drive them.
+    `sign`, `house_side`, `house` properties. The returned box exposes the
+    widgets as attributes (`point_dropdown`, `point_side_dropdown`,
+    `aspect_dropdown`, `sign_side_dropdown`, `sign_dropdown`,
+    `house_side_dropdown`, `house_dropdown`) so tests can drive them.
+
+    `active_points` is the ordered list of point labels present in the
+    grid ('T: Mercury', 'N: Moon', ...), built by build_transit_grid.
     """
     row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
     row.set_spacing(6)
@@ -314,10 +524,11 @@ def _build_transit_filter_row(state) -> Gtk.Box:
 
     row.append(Gtk.Label(label="Filter:"))
 
-    row.point_entry = Gtk.Entry()
-    row.point_entry.set_placeholder_text("Point (e.g. Mercury)")
-    row.point_entry.set_max_width_chars(14)
-    row.append(row.point_entry)
+    point_items = ["All"] + list(active_points)
+    row.point_dropdown = Gtk.DropDown.new_from_strings(point_items)
+    row.point_dropdown.set_selected(0)
+    row.point_dropdown.set_tooltip_text("Filter rows where the point is involved")
+    row.append(row.point_dropdown)
 
     row.point_side_dropdown = Gtk.DropDown.new_from_strings([
         "transit", "natal",
@@ -345,26 +556,56 @@ def _build_transit_filter_row(state) -> Gtk.Box:
     row.sign_dropdown.set_selected(0)
     row.append(row.sign_dropdown)
 
-    def _apply(*_args):
-        state.point = row.point_entry.get_text().strip()
-        state.point_side = row.point_side_dropdown.get_selected_item().get_string()
-        state.aspect = row.aspect_dropdown.get_selected_item().get_string()
-        state.sign_side = row.sign_side_dropdown.get_selected_item().get_string()
-        state.sign = row.sign_dropdown.get_selected_item().get_string()
+    row.house_side_dropdown = Gtk.DropDown.new_from_strings([
+        "transit", "natal",
+    ])
+    row.house_side_dropdown.set_selected(0)
+    row.append(row.house_side_dropdown)
 
-    row.point_entry.connect("changed", _apply)
+    row.house_dropdown = Gtk.DropDown.new_from_strings([
+        "any", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
+    ])
+    row.house_dropdown.set_selected(0)
+    row.append(row.house_dropdown)
+
+    def _selected_string(dropdown) -> str:
+        item = dropdown.get_selected_item()
+        if item is None:
+            return ""
+        return item.get_string()
+
+    def _point_name(label: str) -> str:
+        """Map a dropdown label ('T: Mercury', 'N: Moon') to the bare name."""
+        if not label or label == "All":
+            return ""
+        return label.split(": ", 1)[1] if ": " in label else label
+
+    def _apply(*_args):
+        state.point = _point_name(_selected_string(row.point_dropdown))
+        state.point_side = _selected_string(row.point_side_dropdown)
+        state.aspect = _selected_string(row.aspect_dropdown)
+        state.sign_side = _selected_string(row.sign_side_dropdown)
+        state.sign = _selected_string(row.sign_dropdown)
+        state.house_side = _selected_string(row.house_side_dropdown)
+        house = _selected_string(row.house_dropdown)
+        state.house = int(house) if house not in ("", "any") else 0
+
+    row.point_dropdown.connect("notify::selected", _apply)
     row.point_side_dropdown.connect("notify::selected", _apply)
     row.aspect_dropdown.connect("notify::selected", _apply)
     row.sign_side_dropdown.connect("notify::selected", _apply)
     row.sign_dropdown.connect("notify::selected", _apply)
+    row.house_side_dropdown.connect("notify::selected", _apply)
+    row.house_dropdown.connect("notify::selected", _apply)
     _apply()
     return row
 
 
 def build_transit_grid(active_transits: list[dict],
                        transit_bodies: list[dict] | None = None,
-                       natal_bodies: list[dict] | None = None) -> Gtk.Widget:
-    """Transit grid: Body, Aspect, Natal, T Sign, N Sign, Orb, Days, Priority.
+                       natal_bodies: list[dict] | None = None,
+                       natal_houses: list[dict] | None = None) -> Gtk.Widget:
+    """Transit grid: T Body | T Sign | T House | Aspect | N Body | N Sign | N House | Orb | Days | Priority.
 
     `active_transits` is the priority-scored list from
     astro_analyze.scoring.score_active_transits (already sorted desc by
@@ -372,34 +613,66 @@ def build_transit_grid(active_transits: list[dict],
     same header inverts the order, GTK's built-in behavior).
 
     `transit_bodies` / `natal_bodies` are the body lists from the transit
-    and natal charts; they provide the sign for each planet. When omitted,
-    sign columns show '?' and the sign filter is a no-op.
+    and natal charts; they provide the sign (and longitude / natal house)
+    for each planet. When omitted, sign columns show '' and the sign
+    filter is a no-op.
 
-    The returned widget is a vertical box: a filter row (point / aspect /
-    sign) above the sortable ColumnView. The filter row is reachable as
-    `widget.filter_row` for tests.
+    `natal_houses` is the natal chart's house-cusp list; the TRANSIT
+    body's natal house is computed with astro_text.houses.find_house
+    (the house the transiting body is crossing). When omitted, house
+    columns show ''.
+
+    Body and sign cells are rendered with LiberZodiac path glyphs
+    (cairo-drawn from astro_display.glyph_data) — no emoji fallback.
+    The returned widget is a vertical box: a filter row (point dropdown /
+    aspect / sign / house) above the sortable ColumnView. The filter row
+    is reachable as `widget.filter_row` for tests.
     """
-    transit_signs = {b.get("name", ""): b.get("sign_name", "")
-                     for b in (transit_bodies or [])}
-    natal_signs = {b.get("name", ""): b.get("sign_name", "")
-                   for b in (natal_bodies or [])}
+    transit_by_name = {b.get("name", ""): b for b in (transit_bodies or [])}
+    natal_by_name = {b.get("name", ""): b for b in (natal_bodies or [])}
 
     rows = []
+    active_points: list[str] = []
+    seen_points = set()
     for t in active_transits:
         tb = t.get("transiting_body", "?")
         nb = t.get("natal_body", "?")
         aspect = t.get("aspect", "?")
-        tb_sym = symbol_for_body(tb) or tb
-        nb_sym = symbol_for_body(nb) or nb
-        asp_sym = symbol_for_aspect(aspect) or aspect
-        t_sign = transit_signs.get(tb, "")
-        n_sign = natal_signs.get(nb, "")
+        tb_body = transit_by_name.get(tb)
+        nb_body = natal_by_name.get(nb)
+        t_sign = (tb_body or {}).get("sign_name", "")
+        n_sign = (nb_body or {}).get("sign_name", "")
+        # Transit body's natal house = the house it is currently crossing.
+        t_house = ""
+        t_house_num = 0
+        if tb_body is not None and natal_houses:
+            try:
+                t_house_num = find_house(float(tb_body.get("longitude", 0.0)),
+                                         natal_houses)
+                t_house = str(t_house_num)
+            except Exception:
+                t_house = ""
+        # Natal body's own house from the natal chart.
+        n_house = ""
+        n_house_num = 0
+        if nb_body is not None:
+            try:
+                n_house_num = int(nb_body.get("house", 0))
+                n_house = str(n_house_num) if n_house_num else ""
+            except (TypeError, ValueError):
+                n_house = ""
+        for label, name in ((f"T: {tb}", tb), (f"N: {nb}", nb)):
+            if name not in seen_points:
+                seen_points.add(name)
+                active_points.append(label)
         rows.append(TransitRow(
-            body=f"{tb_sym} {tb}".strip(),
-            aspect=f"{asp_sym} {aspect}".strip(),
-            natal=f"{nb_sym} {nb}".strip(),
-            t_sign=_sign_label(t_sign),
-            n_sign=_sign_label(n_sign),
+            body=tb,
+            aspect=aspect,
+            natal=nb,
+            t_sign=t_sign,
+            n_sign=n_sign,
+            t_house=t_house,
+            n_house=n_house,
             orb=f"{t.get('orb', 0.0):.2f}°",
             days=format_days(t.get("days_to_exact", 0)),
             priority=str(t.get("priority", 0)),
@@ -408,6 +681,8 @@ def build_transit_grid(active_transits: list[dict],
             aspect_name=aspect,
             t_sign_name=t_sign,
             n_sign_name=n_sign,
+            t_house_num=t_house_num,
+            n_house_num=n_house_num,
             sort_orb=float(t.get("orb", 0.0)),
             sort_days=int(t.get("days_to_exact", 0)),
             sort_priority=int(t.get("priority", 0)),
@@ -437,6 +712,13 @@ def build_transit_grid(active_transits: list[dict],
             else:
                 if item.n_sign_name != state.sign:
                     return False
+        if state.house:
+            if state.house_side == "transit":
+                if item.t_house_num != state.house:
+                    return False
+            else:
+                if item.n_house_num != state.house:
+                    return False
         return True
 
     filt = Gtk.CustomFilter.new(_match)
@@ -445,11 +727,13 @@ def build_transit_grid(active_transits: list[dict],
     sort_model = Gtk.SortListModel(model=filter_model)
     selection = Gtk.SingleSelection(model=sort_model)
     view = Gtk.ColumnView(model=selection)
-    view.append_column(_text_column("Body", "body", sortable=True, sorter=_string_sorter(TransitRow, "body")))
+    view.append_column(_glyph_column("T Body", "body", sortable=True, sorter=_string_sorter(TransitRow, "body")))
+    view.append_column(_glyph_column("T Sign", "t_sign", sortable=True, sorter=_string_sorter(TransitRow, "t_sign"), glyph_size=16, glyph_color="#aaaaaa"))
+    view.append_column(_text_column("T House", "t_house", sortable=True, sorter=_prop_sorter(TransitRow, "t_house_num")))
     view.append_column(_text_column("Aspect", "aspect", sortable=True, sorter=_string_sorter(TransitRow, "aspect")))
-    view.append_column(_text_column("Natal", "natal", sortable=True, sorter=_string_sorter(TransitRow, "natal")))
-    view.append_column(_text_column("T Sign", "t_sign", sortable=True, sorter=_string_sorter(TransitRow, "t_sign")))
-    view.append_column(_text_column("N Sign", "n_sign", sortable=True, sorter=_string_sorter(TransitRow, "n_sign")))
+    view.append_column(_glyph_column("N Body", "natal", sortable=True, sorter=_string_sorter(TransitRow, "natal")))
+    view.append_column(_glyph_column("N Sign", "n_sign", sortable=True, sorter=_string_sorter(TransitRow, "n_sign"), glyph_size=16, glyph_color="#aaaaaa"))
+    view.append_column(_text_column("N House", "n_house", sortable=True, sorter=_prop_sorter(TransitRow, "n_house_num")))
     view.append_column(_text_column("Orb", "orb", sortable=True, sorter=_prop_sorter(TransitRow, "sort_orb")))
     view.append_column(_text_column("Days", "days", sortable=True, sorter=_prop_sorter(TransitRow, "sort_days")))
     view.append_column(_text_column("Priority", "priority", sortable=True, sorter=_prop_sorter(TransitRow, "sort_priority", descending=True)))
@@ -465,9 +749,11 @@ def build_transit_grid(active_transits: list[dict],
     state.connect("notify::aspect", _on_filter_changed)
     state.connect("notify::sign_side", _on_filter_changed)
     state.connect("notify::sign", _on_filter_changed)
+    state.connect("notify::house_side", _on_filter_changed)
+    state.connect("notify::house", _on_filter_changed)
 
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-    box.filter_row = _build_transit_filter_row(state)
+    box.filter_row = _build_transit_filter_row(state, active_points)
     box.append(box.filter_row)
     box.append(view)
     view.set_vexpand(True)

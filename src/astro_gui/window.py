@@ -174,16 +174,18 @@ class MainWindow(Gtk.ApplicationWindow):
             "transit_lon": self._transit_lon.get_text(),
             "aspect_mode": self._transit_aspect_mode.get_selected_item().get_string(),
         }
-        # Transit grid filter state (point / aspect / sign), if present
+        # Transit grid filter state (point / aspect / sign / house), if present
         grid = self._transit_grid_view()
         if grid is not None:
             fr = grid.filter_row
             config["grid_filter"] = {
-                "point": fr.point_entry.get_text(),
+                "point": fr.point_dropdown.get_selected_item().get_string(),
                 "point_side": fr.point_side_dropdown.get_selected_item().get_string(),
                 "aspect": fr.aspect_dropdown.get_selected_item().get_string(),
                 "sign_side": fr.sign_side_dropdown.get_selected_item().get_string(),
                 "sign": fr.sign_dropdown.get_selected_item().get_string(),
+                "house_side": fr.house_side_dropdown.get_selected_item().get_string(),
+                "house": fr.house_dropdown.get_selected_item().get_string(),
             }
         return config
 
@@ -216,7 +218,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 fr = grid.filter_row
                 gf = config.get("grid_filter") or {}
                 if "point" in gf:
-                    fr.point_entry.set_text(str(gf["point"]))
+                    self._set_dropdown_by_string(fr.point_dropdown, str(gf["point"]))
                 if "point_side" in gf:
                     self._set_dropdown_by_string(fr.point_side_dropdown, str(gf["point_side"]))
                 if "aspect" in gf:
@@ -225,6 +227,10 @@ class MainWindow(Gtk.ApplicationWindow):
                     self._set_dropdown_by_string(fr.sign_side_dropdown, str(gf["sign_side"]))
                 if "sign" in gf:
                     self._set_dropdown_by_string(fr.sign_dropdown, str(gf["sign"]))
+                if "house_side" in gf:
+                    self._set_dropdown_by_string(fr.house_side_dropdown, str(gf["house_side"]))
+                if "house" in gf:
+                    self._set_dropdown_by_string(fr.house_dropdown, str(gf["house"]))
         finally:
             self._restoring = False
 
@@ -737,6 +743,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 active,
                 transit_bodies=transit.get("bodies", []),
                 natal_bodies=natal_chart.get("bodies", []),
+                natal_houses=natal_chart.get("houses", []),
             )
             self._transit_grid_scroll.set_child(view)
             self._status_bar.set_info(

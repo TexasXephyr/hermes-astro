@@ -69,17 +69,21 @@ transits = [
      "orb": 1.18, "days_to_exact": 0, "priority": 119},
 ]
 transit_bodies = [
-    {"name": "Mercury", "sign_name": "Virgo"},
-    {"name": "Chiron", "sign_name": "Aries"},
+    {"name": "Mercury", "sign_name": "Virgo", "longitude": 174.0},
+    {"name": "Chiron", "sign_name": "Aries", "longitude": 9.0},
 ]
 natal_bodies = [
-    {"name": "Moon", "sign_name": "Taurus"},
-    {"name": "Neptune", "sign_name": "Pisces"},
+    {"name": "Moon", "sign_name": "Taurus", "house": 2},
+    {"name": "Neptune", "sign_name": "Pisces", "house": 6},
 ]
+# Natal cusps: Aries 0°, Taurus 30°, Gemini 60°, Cancer 90°, Leo 120°,
+# Virgo 150°, Libra 180°, Scorpio 210°, Sagittarius 240°, Capricorn 270°,
+# Aquarius 300°, Pisces 330° -> 1..12 for the corresponding longitudes.
+natal_houses = [{"house_num": i + 1, "longitude": i * 30.0} for i in range(12)]
 
 
 def _transit_grid_builds():
-    widget = build_transit_grid(transits, transit_bodies, natal_bodies)
+    widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
     assert isinstance(widget, Gtk.Box), "transit grid should be a vertical Box (filter row + view)"
     # Find the ColumnView child
     view = None
@@ -94,7 +98,7 @@ check("build_transit_grid returns Box with ColumnView + filter row", _transit_gr
 
 
 def _transit_sign_columns():
-    widget = build_transit_grid(transits, transit_bodies, natal_bodies)
+    widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
     view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
     selection = view.get_model()
     n = selection.get_n_items()
@@ -114,8 +118,69 @@ def _transit_sign_columns():
 check("transit grid sign columns populated from body lists", _transit_sign_columns)
 
 
+def _transit_house_columns():
+    widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
+    view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
+    selection = view.get_model()
+    rows = [selection.get_item(i) for i in range(selection.get_n_items())]
+    by_body = {r.body_name: r for r in rows}
+    # Transit Mercury @174° falls between Virgo cusp 150° and Libra cusp
+    # 180° -> house 6; natal Moon's own house is 2.
+    assert by_body["Mercury"].t_house == "6", f"Mercury t_house: {by_body['Mercury'].t_house!r}"
+    assert by_body["Mercury"].n_house == "2", f"Mercury n_house: {by_body['Mercury'].n_house!r}"
+    # Transit Chiron @9° -> house 1; natal Neptune's own house is 6.
+    assert by_body["Chiron"].t_house == "1", f"Chiron t_house: {by_body['Chiron'].t_house!r}"
+    assert by_body["Chiron"].n_house == "6", f"Chiron n_house: {by_body['Chiron'].n_house!r}"
+    # House-less data degrades gracefully
+    widget2 = build_transit_grid(transits)
+    view2 = next(c for c in widget2 if isinstance(c, Gtk.ColumnView))
+    rows2 = [view2.get_model().get_item(i) for i in range(view2.get_model().get_n_items())]
+    assert rows2[0].t_house == "", f"expected empty t_house without houses, got {rows2[0].t_house!r}"
+    assert rows2[0].n_house == "", f"expected empty n_house without bodies, got {rows2[0].n_house!r}"
+
+
+check("transit grid house columns (find_house crossing + natal body house)", _transit_house_columns)
+
+
+def _transit_glyph_columns():
+    widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
+    view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
+    cols = view.get_columns()
+    assert [c.get_title() for c in cols] == [
+        "T Body", "T Sign", "T House", "Aspect", "N Body", "N Sign",
+        "N House", "Orb", "Days", "Priority",
+    ], f"column order wrong: {[c.get_title() for c in cols]}"
+
+
+check("transit grid columns: T Body|T Sign|T House|Aspect|N Body|N Sign|N House|Orb|Days|Priority",
+      _transit_glyph_columns)
+
+
+def _glyph_path_render():
+    # The path parser handles the exact command set used by glyph_data,
+    # and _apply_glyph_path fills a real cairo surface (no exceptions).
+    from astro_gui.renderers.table_renderer import _parse_path, _apply_glyph_path
+    import cairo
+    from astro_display.glyph_data import BODIES, SIGNS
+    for name in list(BODIES)[:3] + list(SIGNS)[:3]:
+        from astro_display.glyph_data import ALL
+        entry = ALL[name]
+        cmds = _parse_path(entry["path"])
+        assert cmds and cmds[0][0] == "M", f"{name} path must start with M"
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 200, 60)
+    cr = cairo.Context(surface)
+    assert _apply_glyph_path(cr, "Sun", 30, 30, 18) is True
+    assert _apply_glyph_path(cr, "Virgo", 80, 30, 16) is True
+    assert _apply_glyph_path(cr, "NoSuchGlyph", 130, 30, 18) is False
+    cr.fill()
+    assert surface.get_width() == 200
+
+
+check("path-glyph parser + cairo rendering (LiberZodiac outlines)", _glyph_path_render)
+
+
 def _transit_days_format():
-    widget = build_transit_grid(transits, transit_bodies, natal_bodies)
+    widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
     view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
     selection = view.get_model()
     rows = [selection.get_item(i) for i in range(selection.get_n_items())]
@@ -145,42 +210,74 @@ def _fmt_days():
 check("format_days smart formatting", _fmt_days)
 
 
-# 2c. Filter mechanism (review item 24 + 25)
+# 2c. Filter mechanism (review item 24 + 25 + 30 + 31)
 def _filter_point():
-    widget = build_transit_grid(transits, transit_bodies, natal_bodies)
+    widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
     view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
     selection = view.get_model()
     fr = widget.filter_row
-    # Filter to transiting Mercury
-    fr.point_entry.set_text("Mercury")
+    # The point filter is a dropdown of ACTIVE points ('T: Mercury', ...).
+    model = fr.point_dropdown.get_model()
+    labels = [model.get_string(i) for i in range(model.get_n_items())]
+    assert labels == ["All", "T: Mercury", "N: Moon", "T: Chiron", "N: Neptune"], \
+        f"active point dropdown wrong: {labels}"
+    # Select 'T: Mercury' -> only transiting Mercury row remains.
+    fr.point_dropdown.set_selected(1)
     n = selection.get_n_items()
-    assert n == 1, f"expected 1 row after Mercury filter, got {n}"
+    assert n == 1, f"expected 1 row after T: Mercury filter, got {n}"
     assert selection.get_item(0).body_name == "Mercury"
-    # Clear
-    fr.point_entry.set_text("")
+    # Reset to All
+    fr.point_dropdown.set_selected(0)
     assert selection.get_n_items() == 2
 
 
-check("filter by transiting point", _filter_point)
+check("filter by active point dropdown (T side)", _filter_point)
 
 
 def _filter_natal_point():
-    widget = build_transit_grid(transits, transit_bodies, natal_bodies)
+    widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
     view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
     selection = view.get_model()
     fr = widget.filter_row
     fr.point_side_dropdown.set_selected(1)  # natal
-    fr.point_entry.set_text("Moon")
+    fr.point_dropdown.set_selected(2)  # N: Moon
     n = selection.get_n_items()
     assert n == 1, f"expected 1 row after natal Moon filter, got {n}"
     assert selection.get_item(0).natal_name == "Moon"
 
 
-check("filter by natal point", _filter_natal_point)
+check("filter by active point dropdown (N side)", _filter_natal_point)
+
+
+def _filter_house():
+    widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
+    view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
+    selection = view.get_model()
+    fr = widget.filter_row
+    # house dropdown: any, 1..12 (index 2 = "2")
+    fr.house_dropdown.set_selected(2)  # transit house 2 -> no rows (Mercury 6, Chiron 1)
+    n = selection.get_n_items()
+    assert n == 0, f"expected 0 rows after transit house 2 filter, got {n}"
+    # Transit house 6 -> only Mercury.
+    fr.house_dropdown.set_selected(6)  # "6"
+    n = selection.get_n_items()
+    assert n == 1 and selection.get_item(0).body_name == "Mercury", \
+        f"expected Mercury for transit house 6, got {n}"
+    # Natal side: natal Moon house 2, Neptune house 6.
+    fr.house_side_dropdown.set_selected(1)  # natal
+    fr.house_dropdown.set_selected(6)  # Neptune
+    n = selection.get_n_items()
+    assert n == 1 and selection.get_item(0).natal_name == "Neptune", \
+        f"expected Neptune for natal house 6, got {n}"
+    fr.house_dropdown.set_selected(0)  # any
+    assert selection.get_n_items() == 2
+
+
+check("filter by house (transit crossing + natal body)", _filter_house)
 
 
 def _filter_aspect():
-    widget = build_transit_grid(transits, transit_bodies, natal_bodies)
+    widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
     view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
     selection = view.get_model()
     fr = widget.filter_row
@@ -201,7 +298,7 @@ check("filter by aspect type", _filter_aspect)
 
 
 def _filter_sign():
-    widget = build_transit_grid(transits, transit_bodies, natal_bodies)
+    widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
     view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
     selection = view.get_model()
     fr = widget.filter_row
@@ -225,11 +322,12 @@ check("filter by sign (transit + natal)", _filter_sign)
 
 # 2d. Sort toggle on re-click (review items 21 + 23)
 def _sort_toggle():
-    widget = build_transit_grid(transits, transit_bodies, natal_bodies)
+    widget = build_transit_grid(transits, transit_bodies, natal_bodies, natal_houses)
     view = next(c for c in widget if isinstance(c, Gtk.ColumnView))
     cvs = view.get_sorter()
-    # Find the Days column (index 6: Body, Aspect, Natal, T Sign, N Sign, Orb, Days, Priority)
-    days_col = view.get_columns()[6]
+    # Find the Days column by title (T Body, T Sign, T House, Aspect,
+    # N Body, N Sign, N House, Orb, Days, Priority).
+    days_col = next(c for c in view.get_columns() if c.get_title() == "Days")
 
     def header_click():
         # Mirrors gtk_column_view_header_button_clicked: re-clicking the
