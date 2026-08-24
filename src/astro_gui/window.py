@@ -15,7 +15,9 @@ from gi.repository import Gtk, GObject, Gdk, Gio, GLib
 from typing import Tuple
 
 from astro_api_client import AstroClient
-from astro_analyze.scoring import planet_relative_values
+from astro_analyze.scoring import planet_relative_values, score_active_transits
+from astro_analyze.transits import find_transit_events
+from astro_analyze.calendar import export_to_ics_string, dedupe_contacts
 from astro_gui.persistence import DocumentSetStore
 from astro_gui.widgets.person_selector import PersonSelector
 from astro_gui.widgets.status_bar import StatusBar
@@ -24,6 +26,11 @@ from astro_gui.renderers.table_renderer import (
     build_transit_grid,
     build_planet_agg_table,
     format_days,
+)
+from astro_gui.renderers.calendar_renderer import (
+    build_calendar_view,
+    calendar_csv_rows,
+    CALENDAR_CSV_COLUMNS,
 )
 from astro_text.symbols import symbol_for_body, symbol_for_sign, symbol_for_aspect
 from astro_text.format import format_degree
@@ -191,6 +198,7 @@ class MainWindow(Gtk.ApplicationWindow):
     PAGE_NATAL_TABLE = 3
     PAGE_TRANSIT_GRID = 4
     PAGE_BY_PLANET = 5
+    PAGE_CALENDAR = 6
 
     def __init__(self, app=None, **kwargs):
         super().__init__(application=app, **kwargs)
@@ -209,6 +217,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._natal_table_chart = None
         self._transit_grid_data = None
         self._by_planet_rows = None
+        self._calendar_data = None
 
         # Root vertical box
         root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -301,6 +310,10 @@ class MainWindow(Gtk.ApplicationWindow):
         btn_by_planet.connect("clicked", lambda _b: self._show_by_planet())
         sidebar_box.append(btn_by_planet)
 
+        btn_calendar = Gtk.Button(label="Calendar")
+        btn_calendar.connect("clicked", lambda _b: self._show_calendar())
+        sidebar_box.append(btn_calendar)
+
         # Save / export the currently displayed chart (item 33)
         btn_save = Gtk.Button(label="Save...")
         btn_save.set_tooltip_text("Export the displayed chart: PNG (wheels) or CSV (tables)")
@@ -339,6 +352,9 @@ class MainWindow(Gtk.ApplicationWindow):
             "transit_lat": self._transit_lat.get_text(),
             "transit_lon": self._transit_lon.get_text(),
             "aspect_mode": self._transit_aspect_mode.get_selected_item().get_string(),
+            "calendar_start": self._calendar_start.get_text(),
+            "calendar_end": self._calendar_end.get_text(),
+            "calendar_aspect": self._calendar_aspect.get_selected_item().get_string(),
         }
         # Transit grid filter state (point / aspect / sign / house), if present
         grid = self._transit_grid_view()
@@ -378,6 +394,12 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._transit_lon.set_text(str(config["transit_lon"]))
             if "aspect_mode" in config:
                 self._set_aspect_mode(str(config["aspect_mode"]))
+            if "calendar_start" in config:
+                self._calendar_start.set_text(str(config["calendar_start"]))
+            if "calendar_end" in config:
+                self._calendar_end.set_text(str(config["calendar_end"]))
+            if "calendar_aspect" in config:
+                self._set_dropdown_by_string(self._calendar_aspect, str(config["calendar_aspect"]))
             # Transit grid filter state
             grid = self._transit_grid_view()
             if grid is not None:
@@ -648,6 +670,51 @@ class MainWindow(Gtk.ApplicationWindow):
         self._by_planet_scroll.set_vexpand(True)
         notebook.append_page(self._by_planet_scroll, Gtk.Label(label="By Planet"))
 
+        # --- Tab 7: Calendar (date-range transit events) ---
+        self._calendar_scroll = Gtk.ScrolledWindow()
+        self._calendar_scroll.set_hexpand(True)
+        self._calendar_scroll.set_vexpand(True)
+        calendar_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self._calendar_scroll.set_child(calendar_box)
+
+        cal_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        cal_controls.set_spacing(6)
+        cal_controls.set_margin_top(6)
+        cal_controls.set_margin_start(6)
+        cal_controls.set_margin_end(6)
+
+        cal_controls.append(Gtk.Label(label="Start:"))
+        self._calendar_start = Gtk.Entry()
+        self._calendar_start.set_placeholder_text("YYYY-MM-DD")
+        self._calendar_start.set_text(self._today_iso())
+        self._calendar_start.set_max_width_chars(12)
+        cal_controls.append(self._calendar_start)
+
+        cal_controls.append(Gtk.Label(label="End:"))
+        self._calendar_end = Gtk.Entry()
+        self._calendar_end.set_placeholder_text("YYYY-MM-DD")
+        self._calendar_end.set_text(self._days_from_today_iso(30))
+        self._calendar_end.set_max_width_chars(12)
+        cal_controls.append(self._calendar_end)
+
+        cal_controls.append(Gtk.Label(label="Aspect:"))
+        self._calendar_aspect = Gtk.DropDown.new_from_strings([
+            "all", "conjunction", "opposition", "square", "trine", "sextile",
+        ])
+        self._calendar_aspect.set_selected(0)
+        cal_controls.append(self._calendar_aspect)
+
+        btn_cal_go = Gtk.Button(label="Update")
+        btn_cal_go.connect("clicked", lambda _b: self._refresh_calendar())
+        cal_controls.append(btn_cal_go)
+
+        calendar_box.append(cal_controls)
+        self._calendar_view_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        calendar_box.append(self._calendar_view_box)
+        self._calendar_view_box.set_vexpand(True)
+
+        notebook.append_page(self._calendar_scroll, Gtk.Label(label="Calendar"))
+
         notebook.set_current_page(self.PAGE_NATAL_WHEEL)
         return notebook
 
@@ -665,6 +732,10 @@ class MainWindow(Gtk.ApplicationWindow):
     def _today_iso(self) -> str:
         import datetime
         return datetime.date.today().isoformat()
+
+    def _days_from_today_iso(self, days: int) -> str:
+        import datetime
+        return (datetime.date.today() + datetime.timedelta(days=days)).isoformat()
 
     def _now_time(self) -> str:
         import datetime
@@ -749,6 +820,11 @@ class MainWindow(Gtk.ApplicationWindow):
         """Switch to the By Planet tab and refresh."""
         self._notebook.set_current_page(self.PAGE_BY_PLANET)
         self._refresh_by_planet()
+
+    def _show_calendar(self):
+        """Switch to the Calendar tab and refresh."""
+        self._notebook.set_current_page(self.PAGE_CALENDAR)
+        self._refresh_calendar()
 
     # ------------------------------------------------------------------
     # Person list management
@@ -953,6 +1029,85 @@ class MainWindow(Gtk.ApplicationWindow):
         except Exception as exc:
             self._status_bar.set_info(f"By-planet error: {exc}")
 
+    def _refresh_calendar(self):
+        """Build the date-range transit event list for the Calendar tab.
+
+        Uses astro_analyze.transits.find_transit_events (library-first,
+        no HTTP server) and scores each event with the centralized
+        score_active_transits so the list matches the Transit Grid's
+        priority semantics. The natal chart's location is flattened from
+        `meta` to the top level because find_transit_events reads
+        latitude/longitude/house_system there.
+        """
+        person = self._selected_person
+        if not person:
+            self._status_bar.set_info("No person selected")
+            return
+        try:
+            natal_chart = self._get_chart(person)
+            if natal_chart is None:
+                self._status_bar.set_info(f"No stored natal chart for {person.get('name')}")
+                return
+            chart_id = person.get("chart_id")
+            start = self._calendar_start.get_text().strip()
+            end = self._calendar_end.get_text().strip()
+            aspect = self._calendar_aspect.get_selected_item().get_string()
+
+            # find_transit_events reads location at the chart top level;
+            # stored charts keep it under meta — flatten it.
+            flat = dict(natal_chart)
+            meta = natal_chart.get("meta", {})
+            flat.setdefault("latitude", meta.get("latitude", 0.0))
+            flat.setdefault("longitude", meta.get("longitude", 0.0))
+            flat.setdefault("house_system", meta.get("house_system", "K"))
+
+            include_aspects = None if aspect == "all" else [aspect]
+            events = find_transit_events(
+                flat, start, end,
+                include_points=None,
+                include_aspects=include_aspects,
+                orb_preset=meta.get("orb_preset", "Modern"),
+            )
+            # One row per aspect contact (dated at its most exact day),
+            # not every in-orb day — otherwise a month shows ~1400 rows.
+            events = dedupe_contacts(events)
+
+            # Score with the centralized formula (sign lookups + grid
+            # weights come from a synthesized transit chart at the first
+            # event date; grid weights are a minor term, so a single-date
+            # approximation is acceptable for the list view).
+            transit_chart = {"bodies": [], "aspects": []}
+            if events:
+                first_date = events[0].get("date", start)
+                try:
+                    transit = self._client.transit(chart_id, first_date, "12:00:00")
+                    transit_chart = {
+                        "bodies": transit.get("bodies", []),
+                        "aspects": transit.get("cross_aspects", []),
+                    }
+                except Exception:
+                    transit_chart = {"bodies": [], "aspects": []}
+            scored = score_active_transits(events, natal_chart, transit_chart)
+
+            self._calendar_data = {
+                "events": scored,
+                "start": start,
+                "end": end,
+                "aspect": aspect,
+            }
+            view = build_calendar_view(scored)
+            # Replace the previous view (keep the controls row above).
+            child = self._calendar_view_box.get_first_child()
+            while child is not None:
+                self._calendar_view_box.remove(child)
+                child = self._calendar_view_box.get_first_child()
+            self._calendar_view_box.append(view)
+            self._status_bar.set_info(
+                f"Calendar for {person.get('name')} {start} → {end} — {len(scored)} events"
+            )
+        except Exception as exc:
+            self._status_bar.set_info(f"Calendar error: {exc}")
+
     def _load_synastry_chart(self, person_a, person_b):
         """Fetch synastry data and render two-ring synastry wheel."""
         try:
@@ -1036,6 +1191,14 @@ class MainWindow(Gtk.ApplicationWindow):
             self._pick_save_path(default, [("CSV", "text/csv", "*.csv")],
                                  self._on_csv_dialog_result,
                                  BY_PLANET_CSV_COLUMNS, by_planet_csv_rows(rows))
+        elif page == self.PAGE_CALENDAR:
+            data = getattr(self, "_calendar_data", None)
+            if not data or not data.get("events"):
+                self._status_bar.set_info("Nothing to export — render the calendar first")
+                return
+            default = f"calendar_{_safe_name(self._person_name())}_{data.get('start')}_{data.get('end')}.ics"
+            self._pick_save_path(default, [("iCalendar", "text/calendar", "*.ics")],
+                                 self._on_ics_dialog_result, data.get("events"))
         else:
             self._status_bar.set_info("Nothing to export on this tab")
 
@@ -1134,6 +1297,17 @@ class MainWindow(Gtk.ApplicationWindow):
         columns, rows = payload
         write_csv_utf16(path, columns, rows)
         self._status_bar.set_info(f"Exported CSV: {path}")
+
+    def _on_ics_dialog_result(self, path, payload):
+        import os
+        events = payload[0] if isinstance(payload, tuple) else payload
+        ics = export_to_ics_string(events)
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(ics)
+        if not (os.path.exists(path) and os.path.getsize(path) > 0):
+            self._status_bar.set_info(f"ICS export failed: {path} is empty or missing")
+            return
+        self._status_bar.set_info(f"Exported ICS: {path}")
 
     # ------------------------------------------------------------------
     # Public accessors

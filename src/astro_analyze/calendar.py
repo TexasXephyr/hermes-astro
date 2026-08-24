@@ -10,6 +10,28 @@ from datetime import datetime
 
 
 # ------------------------------------------------------------------
+# Contact deduplication
+
+def dedupe_contacts(events: list) -> list:
+    """Collapse per-day in-orb events into one row per aspect contact.
+
+    ``find_transit_events`` emits a row for every day an aspect is within
+    orb, so a single Saturn-Sun conjunction spanning weeks produces many
+    rows. For a calendar, one row per (transiting_body, natal_body,
+    aspect) contact is what a human reads: dated at the day the aspect
+    is most exact (smallest orb), with the original fields preserved.
+    Returns the deduped list sorted by date then orb.
+    """
+    best: dict[tuple, dict] = {}
+    for e in events:
+        key = (e.get("transiting_body"), e.get("natal_body"), e.get("aspect"))
+        cur = best.get(key)
+        if cur is None or abs(float(e.get("orb", 999))) < abs(float(cur.get("orb", 999))):
+            best[key] = e
+    return sorted(best.values(), key=lambda e: (e.get("date", ""), e.get("orb", 999)))
+
+
+# ------------------------------------------------------------------
 # ICS export
 
 def _ics_escape(text: str) -> str:
@@ -30,16 +52,8 @@ def _ics_date_str(date_str: str) -> str:
     return date_str.replace("-", "")
 
 
-def export_to_ics(events: list, filename: str) -> None:
-    """
-    Write transit events to .ics file compatible with Google Calendar, Apple Calendar, etc.
-
-    Each event becomes a VEVENT with:
-    - SUMMARY: "Saturn conjunct natal Sun"
-    - DTSTART;VALUE=DATE: exact date of transit
-    - DESCRIPTION: Full transit details
-    - UID: unique identifier per event
-    """
+def _ics_lines(events: list) -> list:
+    """Build the raw ICS line list for `events` (shared by file/string writers)."""
     lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
@@ -75,6 +89,20 @@ def export_to_ics(events: list, filename: str) -> None:
         lines.append("END:VEVENT")
 
     lines.append("END:VCALENDAR")
+    return lines
+
+
+def export_to_ics(events: list, filename: str) -> None:
+    """
+    Write transit events to .ics file compatible with Google Calendar, Apple Calendar, etc.
+
+    Each event becomes a VEVENT with:
+    - SUMMARY: "Saturn conjunct natal Sun"
+    - DTSTART;VALUE=DATE: exact date of transit
+    - DESCRIPTION: Full transit details
+    - UID: unique identifier per event
+    """
+    lines = _ics_lines(events)
 
     # Ensure directory exists
     dirname = os.path.dirname(filename)
@@ -84,6 +112,11 @@ def export_to_ics(events: list, filename: str) -> None:
     with open(filename, "w", encoding="utf-8", newline="") as f:
         f.write("\r\n".join(lines))
         f.write("\r\n")
+
+
+def export_to_ics_string(events: list) -> str:
+    """Return the ICS calendar as a string (for GUI save-dialog writes)."""
+    return "\r\n".join(_ics_lines(events)) + "\r\n"
 
 
 # ------------------------------------------------------------------
