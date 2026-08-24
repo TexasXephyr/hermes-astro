@@ -203,6 +203,7 @@ class WheelRenderer:
             f'    <circle cx="{self.cx}" cy="{self.cy}" r="{self.R_outer}" '
             f'stroke="#666666" stroke-width="1" fill="none"/>\n'
         )
+        parts.append(self._render_aspect_ring_guide())
 
         parts.append("  </g>\n")
         parts.append("</svg>\n")
@@ -262,11 +263,12 @@ class WheelRenderer:
         transit_lookup = {b["name"]: b["longitude"] for b in transit_bodies}
         if aspect_mode in ("transit-natal", "both"):
             cross = transit_data.get("cross_aspects", [])
-            # Lines run from the transit point (outer ring, R_planet=252)
-            # to the natal point (inner ring, R_planet=225) — review item 14.
+            # Review item 28: BOTH endpoints sit on the aspect ring (R_aspect).
+            # The line connects the transiting body's dot to the natal body's
+            # dot — never to the planet glyph rings (225/252).
             parts.extend(self._render_cross_aspects(
                 cross, transit_lookup, natal_lookup, ascendant,
-                r_a=252.0, r_b=self.R_planet,
+                r_a=self.R_aspect, r_b=self.R_aspect,
             ))
         if aspect_mode in ("transit-transit", "both"):
             # aspects among transiting bodies: compute on the fly
@@ -296,6 +298,7 @@ class WheelRenderer:
             f'    <circle cx="{self.cx}" cy="{self.cy}" r="{self.R_outer}" '
             f'stroke="#666666" stroke-width="1" fill="none"/>\n'
         )
+        parts.append(self._render_aspect_ring_guide())
 
         parts.append("  </g>\n")
         parts.append("</svg>\n")
@@ -373,11 +376,12 @@ class WheelRenderer:
 
         lookup_a = {b["name"]: b["longitude"] for b in bodies_a}
         lookup_b = {b["name"]: b["longitude"] for b in bodies_b}
-        # Line ends must meet the representative points: person A glyphs at
-        # R_planet=205, person B glyphs at R_planet=245 (review item 17).
+        # Review item 28: BOTH endpoints sit on the aspect ring (R_aspect).
+        # Person A's dot connects to person B's dot — never to the glyph
+        # rings (205/245).
         parts.extend(self._render_cross_aspects(
             cross_aspects, lookup_a, lookup_b, ascendant_a,
-            r_a=self.R_planet, r_b=245.0,
+            r_a=self.R_aspect, r_b=self.R_aspect,
         ))
 
         parts.extend(self._render_planets(bodies_a, ascendant_a, color="#ffffff"))
@@ -394,6 +398,7 @@ class WheelRenderer:
             f'    <circle cx="{self.cx}" cy="{self.cy}" r="{self.R_outer}" '
             f'stroke="#666666" stroke-width="1" fill="none"/>\n'
         )
+        parts.append(self._render_aspect_ring_guide())
 
         parts.append("  </g>\n")
         parts.append("</svg>\n")
@@ -470,6 +475,17 @@ class WheelRenderer:
             '      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>\n'
             '    </filter>\n'
             '  </defs>\n'
+        )
+
+    def _render_aspect_ring_guide(self) -> str:
+        """Subtle guide circle at the aspect ring so it reads visually.
+
+        Review item 28: all three wheel types get a faint ring at R_aspect
+        (the innermost ring where aspect dots and aspect lines live).
+        """
+        return (
+            f'    <circle cx="{self.cx}" cy="{self.cy}" r="{self.R_aspect}" '
+            f'stroke="#555555" stroke-width="1" fill="none"/>\n'
         )
 
     def _render_houses(self, houses: List[Dict], ascendant: float) -> List[str]:
@@ -582,14 +598,15 @@ class WheelRenderer:
         r_a: float | None = None,
         r_b: float | None = None,
     ) -> List[str]:
-        """Draw cross-aspects: body A on inner ring, body B on outer ring.
+        """Draw cross-aspects: BOTH endpoints on the aspect ring (R_aspect).
 
-        r_a / r_b override the endpoint radii (used by the transit wheel to
-        draw transit-natal lines between the two rings).
+        Review item 28: aspect lines connect only the aspect dots on the
+        innermost ring, never the planet/point rings. r_a / r_b optionally
+        override the endpoint radii (both default to R_aspect).
         """
         parts: List[str] = []
-        ra = self.R_aspect - 20 if r_a is None else r_a
-        rb = self.R_aspect + 20 if r_b is None else r_b
+        ra = self.R_aspect if r_a is None else r_a
+        rb = self.R_aspect if r_b is None else r_b
         for asp in cross_aspects:
             a_name = asp.get("body_a") or asp.get("transit_body")
             b_name = asp.get("body_b") or asp.get("natal_body")

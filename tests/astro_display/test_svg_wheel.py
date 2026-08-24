@@ -217,9 +217,9 @@ def test_render_transit_draws_transit_natal_not_natal_natal(renderer):
     assert "#4dabf7" in svg, "transit-natal aspect must render"
 
 
-def test_render_transit_cross_aspect_endpoints_at_planet_radii(renderer):
-    """Review item 14: transit-natal lines run from the transit point
-    (outer ring, R_planet=252) to the natal point (inner, R_planet=225)."""
+def test_render_transit_cross_aspect_endpoints_at_aspect_ring(renderer):
+    """Review item 28: transit-natal lines run dot-to-dot on the aspect
+    ring (R_aspect=165) — BOTH endpoints, never to the planet rings."""
     natal = {
         "angles": {"ascendant": 0.0},
         "houses": SAMPLE_HOUSES,
@@ -236,21 +236,19 @@ def test_render_transit_cross_aspect_endpoints_at_planet_radii(renderer):
         ],
     }
     svg = renderer.render_transit(natal, transit)
-    # Mars at display 120° -> x = cx - r*cos(120°) = 300 + 0.5r, y = cy + r*sin(120°)
-    # Transit endpoint at r=252: x = 300 - 252*cos(120°) = 300 + 126 = 426, y = 300 + 252*0.866 = 518.25
-    # Natal Sun at display 15° -> r=225: x = 300 - 225*cos(15°) = 300 - 217.33 = 82.67, y = 300 + 225*sin(15°) = 358.24
     import re
     lines = re.findall(
         r'<line x1="([0-9.]+)" y1="([0-9.]+)" x2="([0-9.]+)" y2="([0-9.]+)" '
         r'stroke="#4dabf7"', svg)
     assert lines, "expected a trine line"
     x1, y1, x2, y2 = (float(v) for v in lines[0])
-    # One endpoint must be at radius 252 (transit), the other at 225 (natal)
     r1 = math.hypot(x1 - 300, y1 - 300)
     r2 = math.hypot(x2 - 300, y2 - 300)
-    assert sorted([round(r1), round(r2)]) == [225, 252], (
-        f"cross-aspect endpoints must be at planet radii, got {r1:.1f}, {r2:.1f}"
-    )
+    assert round(r1) == 165, f"transit endpoint must be at R_aspect, got {r1:.1f}"
+    assert round(r2) == 165, f"natal endpoint must be at R_aspect, got {r2:.1f}"
+    # Neither endpoint may sit at the planet radii (225 natal / 252 transit)
+    assert round(r1) not in (225, 252)
+    assert round(r2) not in (225, 252)
 
 
 def test_render_transit_aspect_mode_transit_transit(renderer):
@@ -330,9 +328,9 @@ def test_render_transit_aspect_mode_default_is_transit_natal(renderer):
     assert "#69db7c" not in svg, "default mode must not draw transit-transit aspects"
 
 
-def test_render_synastry_cross_aspect_endpoints_at_planet_radii(renderer):
-    """Review item 17: synastry cross-aspect lines end at the planet radii
-    (person A R_planet=205, person B R_planet=245)."""
+def test_render_synastry_cross_aspect_endpoints_at_aspect_ring(renderer):
+    """Review item 28: synastry cross-aspect lines connect person A's dot
+    to person B's dot — BOTH at R_aspect (150), never at 205/245."""
     chart_a = {
         "angles": {"ascendant": 0.0},
         "houses": SAMPLE_HOUSES,
@@ -357,9 +355,75 @@ def test_render_synastry_cross_aspect_endpoints_at_planet_radii(renderer):
     x1, y1, x2, y2 = (float(v) for v in lines[0])
     r1 = math.hypot(x1 - 300, y1 - 300)
     r2 = math.hypot(x2 - 300, y2 - 300)
-    assert sorted([round(r1), round(r2)]) == [205, 245], (
-        f"synastry cross-aspect endpoints must be at planet radii, got {r1:.1f}, {r2:.1f}"
-    )
+    assert round(r1) == 150, f"person A endpoint must be at R_aspect, got {r1:.1f}"
+    assert round(r2) == 150, f"person B endpoint must be at R_aspect, got {r2:.1f}"
+    assert round(r1) not in (205, 245)
+    assert round(r2) not in (205, 245)
+
+
+def test_no_aspect_line_endpoint_at_planet_radius(renderer):
+    """Review item 28: NO aspect line endpoint may sit on a planet/point
+    ring — transit-natal lines only touch R_aspect (165)."""
+    natal = {
+        "angles": {"ascendant": 0.0},
+        "houses": SAMPLE_HOUSES,
+        "bodies": SAMPLE_BODIES,
+        "aspects": [],
+    }
+    transit = {
+        "bodies": [
+            {"name": "Mars", "longitude": 120.0, "sign_degree": 0.0, "retrograde": False},
+        ],
+        "cross_aspects": [
+            {"transit_body": "Mars", "natal_body": "Sun",
+             "aspect_name": "Trine", "orb": 1.0},
+        ],
+    }
+    svg = renderer.render_transit(natal, transit)
+    import re
+    lines = re.findall(
+        r'<line x1="([0-9.]+)" y1="([0-9.]+)" x2="([0-9.]+)" y2="([0-9.]+)" '
+        r'stroke="#[0-9a-fA-F]{6}"', svg)
+    # Filter out non-aspect lines (sign ticks are #888888; but none of the
+    # transit-natal aspect lines here should touch 225 or 252).
+    for line in lines:
+        x1, y1, x2, y2 = (float(v) for v in line)
+        r1 = round(math.hypot(x1 - 300, y1 - 300))
+        r2 = round(math.hypot(x2 - 300, y2 - 300))
+        assert r1 not in (225, 252), f"aspect endpoint at planet radius: {r1}"
+        assert r2 not in (225, 252), f"aspect endpoint at planet radius: {r2}"
+
+
+def test_aspect_ring_guide_circle_on_all_wheels(renderer):
+    """Review item 28: a subtle guide circle at R_aspect (stroke #555,
+    width 1, fill none) renders on natal, transit, and synastry wheels."""
+    chart = {
+        "angles": {"ascendant": 0.0},
+        "houses": SAMPLE_HOUSES,
+        "bodies": SAMPLE_BODIES,
+        "aspects": [],
+    }
+    transit = {"bodies": []}
+    chart_b = {
+        "angles": {"ascendant": 10.0},
+        "houses": SAMPLE_HOUSES,
+        "bodies": [],
+    }
+    natal_svg = renderer.render_natal(chart)
+    transit_svg = renderer.render_transit(chart, transit)
+    synastry_svg = renderer.render_synastry(chart, chart_b, [])
+    for svg, r in (
+        (natal_svg, renderer.R_aspect),
+        (transit_svg, renderer.R_aspect),
+        (synastry_svg, 150.0),
+    ):
+        guides = re.findall(
+            r'<circle cx="300.0" cy="300.0" r="([0-9.]+)" '
+            r'stroke="#555555" stroke-width="1" fill="none"/>', svg)
+        assert guides, "aspect ring guide circle missing"
+        assert float(r) in {float(g) for g in guides}, (
+            f"expected an aspect ring guide at r={r}, got {guides}"
+        )
 
 
 def test_render_sign_ticks_present(renderer):
