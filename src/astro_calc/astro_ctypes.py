@@ -275,8 +275,43 @@ _lib.ac_detect_aspect.restype = ctypes.c_int
 # ------------------------------------------------------------------
 # Python wrappers
 
+def _default_ephe_path() -> str | None:
+    """Resolve a Swiss Ephemeris data directory, or None (Moshier).
+
+    Order: ASTRO_EPHE_PATH env var → common local installs. The full
+    ephemeris is REQUIRED for minor bodies (Chiron, Lilith, Ceres,
+    Pallas, Juno, Vesta) — Moshier's built-in tables cannot compute
+    them, and the C wrapper silently zero-fills on failure (which is
+    how '0.00 Aries' Chiron appeared).
+    """
+    import os
+    candidates = [
+        os.environ.get("ASTRO_EPHE_PATH"),
+        "/media/xephyr/Local Data/Astrolog/ephemeris",
+        "/usr/share/swisseph",
+        "/usr/share/ephe",
+    ]
+    for c in candidates:
+        if c and os.path.isdir(c):
+            # Require at least the planet files; a bare dir is not proof.
+            if any(os.path.exists(os.path.join(c, f)) for f in ("sepl_00.se1", "se01800.se1", "se01801.se1", "se01802.se1")):
+                return c
+    return None
+
+
 def ac_init(ephe_path: str | None = None) -> int:
-    path_bytes = ephe_path.encode("utf-8") if ephe_path else None
+    """Initialize Swiss Ephemeris.
+
+    Pass an explicit directory to override; otherwise the default full
+    ephemeris is used when available, falling back to Moshier.
+    """
+    path_bytes = None
+    if ephe_path:
+        path_bytes = ephe_path.encode("utf-8")
+    else:
+        d = _default_ephe_path()
+        if d:
+            path_bytes = d.encode("utf-8")
     return _lib.ac_init(path_bytes)
 
 def ac_cleanup() -> None:
@@ -315,6 +350,12 @@ def ac_calc_chart(jd_ut: float, lat: float, lon: float,
     bodies = []
     for i in range(chart.num_bodies):
         b = chart.bodies[i]
+        # The C wrapper zero-fills a body when swe_calc_ut fails (e.g.
+        # minor bodies unavailable in the Moshier fallback ephemeris).
+        # A legitimate body NEVER has distance 0 — drop the fake rather
+        # than render a bogus "0.00 Aries" planet (2026-08-24 bug).
+        if b.distance == 0.0 and b.longitude == 0.0 and b.speed == 0.0:
+            continue
         bodies.append({
             "body_id": b.body_id,
             "name": b.name.decode("utf-8").strip("\x00"),
