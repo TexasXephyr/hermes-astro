@@ -40,6 +40,13 @@ RETROGRADE_GLYPH = "\u211E"  # ℞ (small superscript text, DejaVu)
 ASC_LABEL = "Asc"
 MC_LABEL = "MC"
 
+# Bodies that should not participate in aspect lines (nodes, angles)
+_NODE_NAMES = {"Mean Node", "True Node", "South Node"}
+
+
+def _is_node(name: str) -> bool:
+    return name in _NODE_NAMES
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -103,10 +110,12 @@ def _path_element(name: str, x: float, y: float, size: float,
                   anchor: str = "center") -> str:
     """Emit a <path> for a named glyph, centered at (x, y).
 
-    size is the target height in SVG units; the glyph's outline is scaled
-    to fit that height while preserving aspect ratio. anchor controls
-    horizontal placement: 'center' centers on x, 'right' puts the glyph's
-    right edge at x (for retrograde subscript).
+    size is the target AREA-EQUIVALENT dimension in SVG units — the glyph
+    is scaled so its rendered area equals size², which makes all glyphs
+    visually uniform regardless of aspect ratio (wide glyphs like Cancer
+    and Libra no longer look bigger than tall ones like Aries). anchor
+    controls horizontal placement: 'center' centers on x, 'right' puts
+    the glyph's right edge at x.
 
     The stored outlines are in y-up font units; SVG is y-down, so the
     transform flips y (scale(s, -s)) and the translate compensates using
@@ -115,7 +124,7 @@ def _path_element(name: str, x: float, y: float, size: float,
     entry = ALL.get(name)
     if entry is None:
         return ""
-    s = size / entry["h"]
+    s = size / math.sqrt(entry["w"] * entry["h"])
     # y-flip: x' = dx + s*px,  y' = dy - s*py  (font py is y-up)
     if anchor == "right":
         # right edge (cx + w/2) at x, vertical center at y
@@ -180,6 +189,7 @@ class WheelRenderer:
 
         parts.extend(self._render_houses(houses, ascendant))
         parts.extend(self._render_cusp_lines(houses, ascendant))
+        parts.extend(self._render_sign_ticks(ascendant))
         parts.extend(self._render_sign_labels(ascendant))
 
         body_lookup = self._aspectable_lookup(bodies, chart_data.get("angles", {}))
@@ -236,6 +246,7 @@ class WheelRenderer:
 
         parts.extend(self._render_houses(natal_houses, ascendant))
         parts.extend(self._render_cusp_lines(natal_houses, ascendant))
+        parts.extend(self._render_sign_ticks(ascendant))
         parts.extend(self._render_sign_labels(ascendant))
 
         body_lookup = self._aspectable_lookup(natal_bodies, natal_angles)
@@ -309,6 +320,7 @@ class WheelRenderer:
 
         parts.extend(self._render_houses(houses_a, ascendant_a))
         parts.extend(self._render_cusp_lines(houses_a, ascendant_a))
+        parts.extend(self._render_sign_ticks(ascendant_a))
         parts.extend(self._render_sign_labels(ascendant_a))
 
         lookup_a = {b["name"]: b["longitude"] for b in bodies_a}
@@ -453,15 +465,40 @@ class WheelRenderer:
             parts.append(_zodiac_glyph(name, x, y, size=22))
         return parts
 
+    def _render_sign_ticks(self, ascendant: float) -> List[str]:
+        """Radial ticks at each sign cusp (every 30° of longitude).
+
+        Each tick runs from just outside the outer radius to about halfway
+        to the inner radius of the house band (review item 13).
+        """
+        parts: List[str] = []
+        r_outer = self.R_outer + 2.0
+        r_inner = (self.R_outer + self.R_inner_house) / 2.0
+        for sign_idx in range(12):
+            lon = sign_idx * 30.0  # sign cusp
+            a = _display_angle(lon, ascendant)
+            x1, y1 = _polar(self.cx, self.cy, r_outer, a)
+            x2, y2 = _polar(self.cx, self.cy, r_inner, a)
+            parts.append(
+                f'    <line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" '
+                f'stroke="#888888" stroke-width="1.2"/>\n'
+            )
+        return parts
+
     def _render_aspects(
         self, aspects: List[Dict], body_lookup: Dict[str, float], ascendant: float
     ) -> List[str]:
         parts: List[str] = []
         for asp in aspects:
-            a_name = asp.get("body_a")
-            b_name = asp.get("body_b")
-            lon_a = body_lookup.get(str(a_name))
-            lon_b = body_lookup.get(str(b_name))
+            a_name = str(asp.get("body_a") or "")
+            b_name = str(asp.get("body_b") or "")
+            # Skip node-node and Asc-MC aspects (review item 12)
+            if _is_node(a_name) and _is_node(b_name):
+                continue
+            if {a_name, b_name} == {ASC_LABEL, MC_LABEL}:
+                continue
+            lon_a = body_lookup.get(a_name)
+            lon_b = body_lookup.get(b_name)
             if lon_a is None or lon_b is None:
                 continue
             ang_a = _display_angle(lon_a, ascendant)
